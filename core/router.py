@@ -1,6 +1,7 @@
 from typing import Dict, List, Callable, Optional, Union, Set, Any
 from .agent import Agent
 from .message import Message
+import json
 
 
 class Router:
@@ -20,6 +21,11 @@ class Router:
         self.agents: Dict[str, Agent] = {}
         self.routing_rules: List[Callable[[Message], Optional[str]]] = []
         self.message_history: List[Message] = []
+        self.stats: Dict[str, int] = {
+            "messages_sent": 0,
+            "messages_received": 0,
+            "routing_errors": 0
+        }
 
     def register_agent(self, agent: Agent) -> None:
         """
@@ -66,13 +72,16 @@ class Router:
                 
         # 添加到消息历史
         self.message_history.append(message)
+        self.stats["messages_sent"] += 1
         
         # 路由消息
         if receiver_id in self.agents:
             self.agents[receiver_id].receive(message)
+            self.stats["messages_received"] += 1
             return True
         else:
             print(f"Warning: Could not route message to {receiver_id}. Agent not found.")
+            self.stats["routing_errors"] += 1
             return False
 
     def broadcast(self, message: Message, exclude_sender: bool = True, 
@@ -115,8 +124,11 @@ class Router:
                 )
                 self.agents[agent_id].receive(broadcast_msg)
                 results[agent_id] = True
+                self.stats["messages_sent"] += 1
+                self.stats["messages_received"] += 1
             else:
                 results[agent_id] = False
+                self.stats["routing_errors"] += 1
                 
         return results
 
@@ -174,5 +186,37 @@ class Router:
         return {
             "agent_count": len(self.agents),
             "routing_rule_count": len(self.routing_rules),
-            "message_history_count": len(self.message_history)
+            "message_history_count": len(self.message_history),
+            "stats": self.stats.copy()
         }
+
+    def export_message_log(self, filepath: str) -> bool:
+        """
+        导出消息日志到文件
+        
+        Args:
+            filepath: 导出文件路径
+            
+        Returns:
+            是否导出成功
+        """
+        try:
+            log_data = []
+            for msg in self.message_history:
+                log_data.append({
+                    "id": msg.id,
+                    "timestamp": msg.timestamp.isoformat(),
+                    "sender": msg.sender,
+                    "receiver": msg.receiver,
+                    "type": msg.type,
+                    "content": str(msg.content),
+                    "metadata": msg.metadata
+                })
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(log_data, f, ensure_ascii=False, indent=2)
+            
+            return True
+        except Exception as e:
+            print(f"导出消息日志失败: {e}")
+            return False

@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional, List, Union
 import json
 import uuid
+import requests
 
 
 class MCPTool:
@@ -31,10 +32,21 @@ class MCPTool:
         Returns:
             是否初始化成功
         """
-        # 这里应该实现与MCP服务的实际连接逻辑
-        # 为简化起见，我们假设初始化总是成功
-        self.initialized = True
-        return True
+        try:
+            # 尝试连接MCP服务并获取功能列表
+            response = requests.get(f"{self.mcp_endpoint}/capabilities", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                self.capabilities = data.get("capabilities", [])
+                self.initialized = True
+                return True
+            else:
+                self.initialized = False
+                return False
+        except Exception as e:
+            print(f"初始化MCP工具失败: {e}")
+            self.initialized = False
+            return False
 
     def get_capabilities(self) -> List[str]:
         """
@@ -43,9 +55,9 @@ class MCPTool:
         Returns:
             功能列表
         """
-        # 这里应该从MCP服务获取实际的功能列表
-        # 为简化起见，我们返回一个示例列表
-        return ["read_file", "write_file", "execute_command"]
+        if not self.initialized:
+            self.initialize()
+        return self.capabilities
 
     def run(self, **kwargs) -> Dict[str, Any]:
         """
@@ -58,58 +70,50 @@ class MCPTool:
             执行结果
         """
         if not self.initialized:
-            self.initialize()
+            if not self.initialize():
+                return {
+                    "success": False,
+                    "error": "Failed to initialize MCP tool connection",
+                    "tool": self.name
+                }
             
         command = kwargs.get("command", "")
         params = kwargs.get("params", {})
         
-        # 这里应该实现与MCP服务的实际通信逻辑
-        # 为简化起见，我们模拟一些常见的MCP操作
-        
         try:
-            result = self._execute_mcp_command(command, params)
-            return {
-                "success": True,
-                "result": result,
-                "tool": self.name
+            # 构造请求数据
+            request_data = {
+                "command": command,
+                "params": params
             }
+            
+            # 发送POST请求到MCP服务
+            response = requests.post(
+                f"{self.mcp_endpoint}/execute",
+                json=request_data,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": self.name
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}: {response.text}",
+                    "tool": self.name
+                }
         except Exception as e:
             return {
                 "success": False,
                 "error": str(e),
                 "tool": self.name
             }
-
-    def _execute_mcp_command(self, command: str, params: Dict[str, Any]) -> Any:
-        """
-        执行具体的MCP命令
-        
-        Args:
-            command: 命令名称
-            params: 命令参数
-            
-        Returns:
-            命令执行结果
-        """
-        # 模拟不同的MCP命令执行
-        if command == "read_file":
-            file_path = params.get("path", "")
-            # 模拟文件读取
-            return f"Contents of {file_path}:\nThis is a simulated file content."
-            
-        elif command == "write_file":
-            file_path = params.get("path", "")
-            content = params.get("content", "")
-            # 模拟文件写入
-            return f"Successfully wrote {len(content)} characters to {file_path}"
-            
-        elif command == "execute_command":
-            cmd = params.get("cmd", "")
-            # 模拟命令执行
-            return f"Executed command: {cmd}\nResult: Command executed successfully"
-            
-        else:
-            raise ValueError(f"Unsupported MCP command: {command}")
 
 
 class MCPToolRegistry:

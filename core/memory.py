@@ -1,6 +1,7 @@
+import json
+import os
 from typing import Any, Dict, Optional, List
 from datetime import datetime, timedelta
-import json
 
 
 class Memory:
@@ -12,17 +13,22 @@ class Memory:
     - 长期记忆：数据库/向量存储（简化版实现）
     """
 
-    def __init__(self, short_term_duration: int = 3600):
+    def __init__(self, short_term_duration: int = 3600, persistent_storage_path: str = "memory.json"):
         """
         初始化记忆模块
         
         Args:
             short_term_duration: 短期记忆持续时间（秒），默认1小时
+            persistent_storage_path: 长期记忆持久化存储路径
         """
         # 短期记忆存储在内存中
         self.short_term_memory: Dict[str, Dict[str, Any]] = {}
         self.long_term_memory: Dict[str, Any] = {}
         self.short_term_duration = short_term_duration
+        self.persistent_storage_path = persistent_storage_path
+        
+        # 从持久化存储加载长期记忆
+        self._load_persistent_memory()
 
     def store(self, key: str, value: Any, memory_type: str = "short") -> None:
         """
@@ -42,6 +48,8 @@ class Memory:
             }
         elif memory_type == "long":
             self.long_term_memory[key] = value
+            # 持久化长期记忆
+            self._save_persistent_memory()
 
     def retrieve(self, key: str, default: Any = None) -> Any:
         """
@@ -69,6 +77,27 @@ class Memory:
             return self.long_term_memory[key]
             
         return default
+
+    def _load_persistent_memory(self) -> None:
+        """
+        从持久化存储加载长期记忆
+        """
+        try:
+            if os.path.exists(self.persistent_storage_path):
+                with open(self.persistent_storage_path, 'r', encoding='utf-8') as f:
+                    self.long_term_memory = json.load(f)
+        except Exception as e:
+            print(f"警告：无法加载持久化记忆: {e}")
+
+    def _save_persistent_memory(self) -> None:
+        """
+        将长期记忆保存到持久化存储
+        """
+        try:
+            with open(self.persistent_storage_path, 'w', encoding='utf-8') as f:
+                json.dump(self.long_term_memory, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"警告：无法保存持久化记忆: {e}")
 
     def cleanup_expired_memory(self) -> None:
         """
@@ -114,13 +143,16 @@ class Memory:
         Returns:
             是否成功删除
         """
+        deleted = False
         if memory_type == "short" and key in self.short_term_memory:
             del self.short_term_memory[key]
-            return True
+            deleted = True
         elif memory_type == "long" and key in self.long_term_memory:
             del self.long_term_memory[key]
-            return True
-        return False
+            deleted = True
+            # 更新持久化存储
+            self._save_persistent_memory()
+        return deleted
 
     def clear(self, memory_type: str = "both") -> None:
         """
@@ -133,6 +165,8 @@ class Memory:
             self.short_term_memory.clear()
         if memory_type in ["long", "both"]:
             self.long_term_memory.clear()
+            # 更新持久化存储
+            self._save_persistent_memory()
 
     def get_memory_stats(self) -> Dict[str, int]:
         """

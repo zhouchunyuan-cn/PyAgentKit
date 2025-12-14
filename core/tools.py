@@ -34,23 +34,62 @@ class WebSearchTool(Tool):
 
     def run(self, query: str) -> Dict[str, Any]:
         """
-        模拟网络搜索结果
-        在实际实现中，这里会调用真实的搜索引擎API
+        通过网络搜索获取信息
+        
+        Args:
+            query: 搜索查询
+            
+        Returns:
+            搜索结果
         """
-        # 模拟搜索结果
-        mock_results = {
-            "人工智能": "人工智能是计算机科学的一个分支，旨在创建能够执行通常需要人类智能的任务的系统。",
-            "机器学习": "机器学习是人工智能的一个子领域，专注于让计算机通过数据学习和改进。",
-            "深度学习": "深度学习是机器学习的一个分支，使用神经网络来模拟人脑处理信息的方式。"
-        }
-        
-        result = mock_results.get(query, f"未找到关于'{query}'的具体信息。")
-        
-        return {
-            "query": query,
-            "result": result,
-            "source": "MockSearchEngine"
-        }
+        try:
+            # 使用 DuckDuckGo API 进行搜索
+            import urllib.parse
+            import urllib.request
+            import json
+            
+            # 构造搜索URL
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disamb=1"
+            
+            # 发送请求
+            req = urllib.request.Request(url, headers={'User-Agent': 'PyAgentKit/1.0'})
+            response = urllib.request.urlopen(req)
+            data = json.loads(response.read().decode())
+            
+            # 解析结果
+            result = ""
+            if 'AbstractText' in data and data['AbstractText']:
+                result = data['AbstractText']
+            elif 'RelatedTopics' in data and data['RelatedTopics']:
+                # 获取第一个相关主题作为结果
+                first_topic = data['RelatedTopics'][0]
+                if 'Text' in first_topic:
+                    result = first_topic['Text']
+            else:
+                result = f"未找到关于'{query}'的具体信息。"
+            
+            return {
+                "query": query,
+                "result": result,
+                "source": "DuckDuckGo API"
+            }
+        except Exception as e:
+            # 出现错误时回退到模拟数据
+            mock_results = {
+                "人工智能": "人工智能是计算机科学的一个分支，旨在创建能够执行通常需要人类智能的任务的系统。",
+                "机器学习": "机器学习是人工智能的一个子领域，专注于让计算机通过数据学习和改进。",
+                "深度学习": "深度学习是机器学习的一个分支，使用神经网络来模拟人脑处理信息的方式。"
+            }
+            
+            result = mock_results.get(query, f"未找到关于'{query}'的具体信息。")
+            
+            return {
+                "query": query,
+                "result": result,
+                "source": "MockSearchEngine",
+                "fallback_reason": str(e)
+            }
 
 
 class CalculatorTool(Tool):
@@ -178,6 +217,62 @@ class FileReadTool(Tool):
         except Exception as e:
             return {
                 "path": path,
+                "error": str(e)
+            }
+
+
+class DatabaseTool(Tool):
+    """
+    数据库访问工具
+    """
+
+    def __init__(self):
+        super().__init__("database", "执行数据库查询操作")
+
+    def run(self, query: str, db_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        执行数据库查询
+        
+        Args:
+            query: SQL查询语句
+            db_config: 数据库配置信息
+            
+        Returns:
+            查询结果或错误信息
+        """
+        try:
+            # 这里我们模拟数据库操作而不是真正连接数据库
+            # 在实际应用中，您可能需要使用 sqlite3, psycopg2, pymysql 等库
+            
+            # 模拟数据库查询结果
+            mock_data = {
+                "users": [
+                    {"id": 1, "name": "Alice", "email": "alice@example.com"},
+                    {"id": 2, "name": "Bob", "email": "bob@example.com"}
+                ],
+                "products": [
+                    {"id": 1, "name": "Laptop", "price": 999.99},
+                    {"id": 2, "name": "Phone", "price": 599.99}
+                ]
+            }
+            
+            # 根据查询语句返回相应数据
+            table_name = None
+            if "users" in query.lower():
+                table_name = "users"
+            elif "products" in query.lower():
+                table_name = "products"
+            
+            result = mock_data.get(table_name, [])
+            
+            return {
+                "query": query,
+                "result": result,
+                "row_count": len(result)
+            }
+        except Exception as e:
+            return {
+                "query": query,
                 "error": str(e)
             }
 
