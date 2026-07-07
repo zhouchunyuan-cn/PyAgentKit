@@ -1,7 +1,17 @@
+"""
+双层记忆（Memory）
+
+短期记忆基于时间的缓存，长期记忆持久化到磁盘 JSON。
+为 Agent 提供跨交互的上下文保持能力。
+"""
+
 import json
 import os
+import logging
 from typing import Any, Dict, Optional, List
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 class Memory:
@@ -87,7 +97,7 @@ class Memory:
                 with open(self.persistent_storage_path, 'r', encoding='utf-8') as f:
                     self.long_term_memory = json.load(f)
         except Exception as e:
-            print(f"警告：无法加载持久化记忆: {e}")
+            logger.warning("无法加载持久化记忆: %s", e)
 
     def _save_persistent_memory(self) -> None:
         """
@@ -97,7 +107,7 @@ class Memory:
             with open(self.persistent_storage_path, 'w', encoding='utf-8') as f:
                 json.dump(self.long_term_memory, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"警告：无法保存持久化记忆: {e}")
+            logger.warning("无法保存持久化记忆: %s", e)
 
     def cleanup_expired_memory(self) -> None:
         """

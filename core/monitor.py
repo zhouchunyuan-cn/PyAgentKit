@@ -1,8 +1,18 @@
+"""
+监控系统（AgentMonitor）
+
+实时监控 Agent 系统的运行状态：注册的 Agent、消息历史、路由统计，
+并可导出 JSON 报告。用于调试与状态观测。
+注意：时序追踪请用 core/trace.py（Tracer），本模块提供的是状态快照。
+"""
+
 from typing import Dict, List, Any, Optional
 from .router import Router
 from .agent import Agent
 import json
-import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AgentMonitor:
@@ -96,7 +106,7 @@ class AgentMonitor:
             
             return True
         except Exception as e:
-            print(f"导出监控报告失败: {e}")
+            logger.error("导出监控报告失败: %s", e)
             return False
 
     def print_real_time_status(self) -> None:

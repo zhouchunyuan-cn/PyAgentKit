@@ -1,0 +1,36 @@
+# PyAgentKit 团队编排示例配置
+#
+# 用法：pyagentkit run configs/team_example.yaml
+# 声明一个团队：项目经理(leader) → 研究员 + 作家 协作
+
+llm:
+  model: glm-4-flash
+
+agents:
+  - id: leader
+    name: 项目经理
+    system_prompt: "你是项目经理，擅长拆解任务、分配工作、汇总成果。"
+    capabilities: [plan]
+
+  - id: researcher
+    name: 研究员
+    system_prompt: "你是研究员，负责收集和整理资料，输出简洁要点。"
+    capabilities: [search]
+    tools: [web_search]
+
+  - id: writer
+    name: 作家
+    system_prompt: "你是作家，把研究员的资料整理成通顺的文章。"
+    capabilities: [write]
+
+# 团队配置：hierarchical 流程让 leader 自动编排
+team:
+  name: 内容生产组
+  process: hierarchical        # 或 sequential（顺序接力）
+  leader: leader               # hierarchical 必填
+  members: [researcher, writer]
+  max_subtasks: 4              # leader 最多拆出几个子任务
+
+# 注意：团队模式忽略 session 块（由 team.run 驱动，不走单 agent 会话）
+session:
+  agent: leader

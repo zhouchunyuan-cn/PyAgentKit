@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyagentkit"
+version = "0.3.0"
+description = "轻量级、可扩展的多智能体框架，基于智谱 GLM，支持 ReAct、向量记忆、声明式编排"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "zhouchunyuan" }]
+dependencies = [
+    "zhipuai>=2.1.0",
+    "requests>=2.28.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "scikit-learn>=1.0.0",
+    "numpy>=1.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.scripts]
+# 安装后可全局使用：pyagentkit chat / ask / run / tools
+pyagentkit = "cli:main"
+
+[tool.setuptools]
+# 纯 Python 项目，显式声明顶层包与模块
+py-modules = ["cli", "agents", "main"]
+
+[tool.setuptools.packages.find]
+include = ["core*"]
+exclude = ["tests*", "configs*"]

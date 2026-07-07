@@ -1,3 +1,10 @@
+"""
+任务调度器（Orchestrator）
+
+控制 Agent 的执行顺序与并发：顺序执行、广播、独立线程运行。
+基于 Router 提供更高级的执行流程控制。
+"""
+
 from typing import List, Dict, Any, Set, Optional
 from .agent import Agent
 from .router import Router

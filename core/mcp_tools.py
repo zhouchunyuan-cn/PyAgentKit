@@ -1,8 +1,16 @@
+"""
+MCP（Model Context Protocol）工具集成
+
+提供接入符合 MCP 协议的外部工具的能力，作为 Agent 工具系统的扩展入口。
+"""
+
 from typing import Dict, Any, Optional, List, Union
 import json
 import uuid
+import logging
 import requests
 
+logger = logging.getLogger(__name__)
 
 class MCPTool:
     """
@@ -44,7 +52,7 @@ class MCPTool:
                 self.initialized = False
                 return False
         except Exception as e:
-            print(f"初始化MCP工具失败: {e}")
+            logger.warning("初始化MCP工具失败: %s", e)
             self.initialized = False
             return False
 
@@ -208,15 +216,38 @@ class MCPIntegrationTool:
     作为Agent访问MCP工具的统一入口
     """
 
-    def __init__(self, name: str, description: str):
+    def __init__(self, name: str, description: str, parameters: Optional[Dict[str, Any]] = None):
         self.name = name
         self.description = description
+        # 入参 schema，供 function-calling 使用
+        self.parameters = parameters or {
+            "type": "object",
+            "properties": {
+                "tool_name": {"type": "string", "description": "要调用的MCP工具名称"},
+                "command": {"type": "string", "description": "要执行的命令"},
+                "params": {"type": "object", "description": "命令参数"},
+            },
+            "required": ["tool_name"],
+        }
 
     def run(self, **kwargs) -> Any:
         """
         执行工具
         """
         raise NotImplementedError
+
+    def to_openai_schema(self) -> Dict[str, Any]:
+        """
+        转换为 GLM/OpenAI function-calling 要求的工具 schema 格式
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 class ConcreteMCPIntegrationTool(MCPIntegrationTool):

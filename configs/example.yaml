@@ -1,0 +1,34 @@
+# PyAgentKit 声明式编排示例配置
+#
+# 用法：pyagentkit run configs/example.yaml
+# 修改本文件即可定制助手行为，无需改动 Python 代码。
+
+# LLM 配置
+llm:
+  model: glm-4-flash          # 也可用 glm-4.7-flash（免费更强）
+
+# Agent 声明（可配多个，CLI 会话默认绑定 session.agent）
+agents:
+  - id: assistant
+    name: 智能助手
+    system_prompt: |
+      你是一个友好、专业的中文智能助手。
+      回答要简洁准确。遇到需要联网信息或数学计算时，主动调用相应工具。
+    capabilities: [chat, search, calculate]
+    tools:
+      - web_search            # 网络搜索
+      - calculator            # 数学计算
+
+  # 第二个 agent 示例（专用分析角色，可被协作系统按能力调用）
+  - id: analyst
+    name: 数据分析员
+    system_prompt: 你是数据分析专家，擅长数值计算和解读。
+    capabilities: [analysis, calculate]
+    tools:
+      - calculator
+
+# 会话配置：CLI 交互时绑定到哪个 agent
+session:
+  agent: assistant            # 必须是上面声明过的 agent id
+  max_history: 10             # 保留最近 10 条消息（约 5 轮）
+  system_context: "请用中文回复。"   # 每轮注入的额外系统上下文

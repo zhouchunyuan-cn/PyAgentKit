@@ -1,7 +1,18 @@
+"""
+同步消息路由器（Router）
+
+集中式消息总线，管理 Agent 间的通信：点对点路由、广播、规则路由。
+带异常边界（单个 Agent 崩溃不中断整个消息流）。
+异步场景请用 core/async_router.py（AsyncRouter）。
+"""
+
 from typing import Dict, List, Callable, Optional, Union, Set, Any
 from .agent import Agent
 from .message import Message
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Router:
@@ -76,11 +87,17 @@ class Router:
         
         # 路由消息
         if receiver_id in self.agents:
-            self.agents[receiver_id].receive(message)
-            self.stats["messages_received"] += 1
-            return True
+            try:
+                self.agents[receiver_id].receive(message)
+                self.stats["messages_received"] += 1
+                return True
+            except Exception as e:
+                # 异常边界：单个 Agent 处理失败不应中断整个消息流
+                logger.exception("Agent '%s' 处理消息时抛出异常: %s", receiver_id, e)
+                self.stats["routing_errors"] += 1
+                return False
         else:
-            print(f"Warning: Could not route message to {receiver_id}. Agent not found.")
+            logger.warning("无法路由消息到 %s：Agent 不存在", receiver_id)
             self.stats["routing_errors"] += 1
             return False
 
@@ -122,10 +139,15 @@ class Router:
                     msg_type=message.type,
                     metadata=message.metadata.copy()
                 )
-                self.agents[agent_id].receive(broadcast_msg)
-                results[agent_id] = True
-                self.stats["messages_sent"] += 1
-                self.stats["messages_received"] += 1
+                try:
+                    self.agents[agent_id].receive(broadcast_msg)
+                    results[agent_id] = True
+                    self.stats["messages_sent"] += 1
+                    self.stats["messages_received"] += 1
+                except Exception as e:
+                    logger.exception("广播时 Agent '%s' 处理异常: %s", agent_id, e)
+                    results[agent_id] = False
+                    self.stats["routing_errors"] += 1
             else:
                 results[agent_id] = False
                 self.stats["routing_errors"] += 1
@@ -218,5 +240,5 @@ class Router:
             
             return True
         except Exception as e:
-            print(f"导出消息日志失败: {e}")
+            logger.error("导出消息日志失败: %s", e)
             return False

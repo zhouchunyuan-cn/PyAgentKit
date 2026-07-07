@@ -1,3 +1,10 @@
+"""
+消息协议（Message）
+
+定义 Agent 间通信的标准消息格式：sender/receiver/content/type/metadata。
+是 Router 路由与 Team 协作的数据载体。
+"""
+
 from typing import Any, Dict, Optional
 from datetime import datetime
 import uuid
