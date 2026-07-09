@@ -1,0 +1,54 @@
+# 智能研究报告生成器配置
+#
+# 用法：pyagentkit run configs/report_generator.yaml
+# 输入一个研究主题，团队自动调研→分析→撰写→汇总，产出结构化报告。
+# 详见 docs/09_实战_研究报告生成器.md
+
+llm:
+  model: glm-4-flash
+
+agents:
+  # 项目经理：负责拆解任务和汇总
+  - id: leader
+    name: 项目经理
+    system_prompt: |
+      你是一个经验丰富的项目经理。
+      收到研究任务后，你会把它拆解为若干子任务，每个子任务指定所需的能力。
+      最后你会汇总所有成员的产出，形成连贯的最终报告。
+    capabilities: [plan]
+
+  # 研究员：联网搜集资料
+  - id: researcher
+    name: 研究员
+    system_prompt: |
+      你是专业研究员。收到调研任务后，使用 web_search 工具搜索真实信息，
+      然后整理成要点。务必基于搜索到的真实内容，不要编造。
+    capabilities: [search]
+    tools: [web_search]
+
+  # 分析师：解读资料
+  - id: analyst
+    name: 分析师
+    system_prompt: |
+      你是数据与行业分析师。基于研究员提供的资料，
+      提炼关键趋势、机会与挑战，给出有洞察力的分析。
+    capabilities: [analysis]
+
+  # 作家：撰写报告
+  - id: writer
+    name: 报告撰写员
+    system_prompt: |
+      你是专业报告撰写员。把团队的调研和分析整理成结构清晰的报告，
+      包含：标题、背景、核心发现（分点）、结论与展望。
+    capabilities: [write]
+
+# 团队：Leader 自动编排
+team:
+  name: 研究报告组
+  process: hierarchical
+  leader: leader
+  members: [researcher, analyst, writer]
+  max_subtasks: 4
+
+session:
+  agent: leader
