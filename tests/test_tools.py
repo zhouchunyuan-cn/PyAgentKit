@@ -4,15 +4,17 @@
 覆盖：ToolRegistry 注册/执行/schema 导出、WebSearchTool mock 模式与失败处理、
 FileReadTool 路径越界安全检查
 """
+
 import os
+
 import pytest
+
 from core.tools import (
-    Tool,
     CalculatorTool,
-    WebSearchTool,
-    FileReadTool,
     DatabaseTool,
+    FileReadTool,
     ToolRegistry,
+    WebSearchTool,
 )
 
 

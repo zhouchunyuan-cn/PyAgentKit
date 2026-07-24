@@ -4,10 +4,12 @@ Router 模块单元测试
 覆盖：Agent 注册/注销、点对点路由、广播、消息历史、统计，
 以及关键的【异常边界】——单个 Agent 抛异常不应中断消息流
 """
+
 import pytest
-from core.router import Router
-from core.message import Message
+
 from core.agent import Agent
+from core.message import Message
+from core.router import Router
 
 
 class StubAgent(Agent):

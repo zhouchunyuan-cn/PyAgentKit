@@ -9,19 +9,24 @@
 - Agent.think 的 stream_callback 被调用
 - Agent token 累计
 """
-import pytest
+
 from types import SimpleNamespace
 
-from core.llm import (
-    LLMClient, ChatResult, ToolCall, TokenUsage, StreamChunk, GLMClient,
-)
-from core.agent import Agent
-from core.message import Message
+import pytest
 
+from core.agent import Agent
+from core.llm import (
+    ChatResult,
+    GLMClient,
+    LLMClient,
+    StreamChunk,
+    TokenUsage,
+)
 
 # --------------------------------------------------------------------
 # TokenUsage
 # --------------------------------------------------------------------
+
 
 class TestTokenUsage:
     def test_defaults(self):
@@ -48,12 +53,13 @@ class TestTokenUsage:
 # GLMClient usage 提取（不联网，测 _extract_usage 静态方法）
 # --------------------------------------------------------------------
 
+
 class TestUsageExtraction:
     def test_extract_normal_usage(self):
         # 构造 mock response（模拟 zhipuai 响应结构）
-        resp = SimpleNamespace(usage=SimpleNamespace(
-            prompt_tokens=15, completion_tokens=25, total_tokens=40
-        ))
+        resp = SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=15, completion_tokens=25, total_tokens=40)
+        )
         u = GLMClient._extract_usage(resp)
         assert u.prompt_tokens == 15
         assert u.completion_tokens == 25
@@ -75,6 +81,7 @@ class TestUsageExtraction:
 # 流式 chat_stream（用 MockLLM 模拟 SDK 迭代器）
 # --------------------------------------------------------------------
 
+
 class StreamingMockLLM(LLMClient):
     """模拟流式 LLM：chat_stream 产出多个 chunk"""
 
@@ -91,7 +98,7 @@ class StreamingMockLLM(LLMClient):
     def chat_stream(self, messages, tools=None, tool_choice="auto"):
         self.stream_calls += 1
         for i, chunk_text in enumerate(self._chunks):
-            is_last = (i == len(self._chunks) - 1)
+            is_last = i == len(self._chunks) - 1
             yield StreamChunk(
                 delta_content=chunk_text,
                 finish_reason="stop" if is_last else None,
@@ -116,6 +123,7 @@ class TestStreaming:
 
     def test_default_chat_stream_fallback(self):
         """未覆盖 chat_stream 的 LLMClient，用基类默认实现回退非流式"""
+
         class SimpleLLM(LLMClient):
             def chat(self, messages, tools=None, tool_choice="auto"):
                 return ChatResult(content="完整回复", usage=TokenUsage(1, 2, 3))
@@ -131,14 +139,19 @@ class TestStreaming:
 # Agent.think 流式回调与 token 累计
 # --------------------------------------------------------------------
 
+
 class TestAgentStreamingAndTokens:
     @pytest.fixture
     def agent_with_llm(self):
         llm = StreamingMockLLM(["你好", "世界"], usage=TokenUsage(10, 20, 30))
+
         class A(Agent):
             def __init__(self):
                 super().__init__("a", "助手", system_prompt="你是助手", llm_client=llm)
-            def receive(self, m): pass
+
+            def receive(self, m):
+                pass
+
         return A()
 
     def test_stream_callback_invoked(self, agent_with_llm):
@@ -170,10 +183,14 @@ class TestAgentStreamingAndTokens:
     def test_no_callback_uses_nonstream(self):
         """不传 stream_callback 时走非流式 chat"""
         llm = StreamingMockLLM(["x"], usage=TokenUsage(1, 1, 2))
+
         class A(Agent):
             def __init__(self):
                 super().__init__("a", "a", llm_client=llm)
-            def receive(self, m): pass
+
+            def receive(self, m):
+                pass
+
         agent = A()
         result = agent.think("hi")
         assert result == "x"

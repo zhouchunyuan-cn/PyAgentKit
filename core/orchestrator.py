@@ -54,7 +54,12 @@ class Orchestrator:
 
     def sequential_execution(self, agent_ids: list[str], initial_message: Message) -> None:
         """
-        顺序执行Agents
+        顺序执行 Agents
+
+        .. deprecated::
+            此方法当前无调用点。如需顺序流水线协作，推荐使用
+            :class:`~core.team.SequentialProcess`，它通过 SharedContext
+            传递产出，比本方法的"同消息复用"更清晰。
 
         Args:
             agent_ids: Agent ID列表，按执行顺序排列
@@ -89,7 +94,12 @@ class Orchestrator:
 
     async def async_send_message(self, message: Message) -> bool:
         """
-        异步发送消息
+        异步发送消息（在线程池中执行同步路由）
+
+        .. deprecated::
+            此方法当前无调用点。如需真正的异步消息路由，推荐使用
+            :class:`~core.async_router.AsyncRouter`，它基于 asyncio.Queue
+            解耦，能根治同步嵌套递归。
 
         Args:
             message: 要发送的消息
@@ -104,7 +114,12 @@ class Orchestrator:
 
     def run_agent_in_thread(self, agent_id: str, message: Message) -> threading.Thread:
         """
-        在独立线程中运行Agent
+        在独立线程中运行 Agent
+
+        .. deprecated::
+            此方法当前无调用点。如需并发处理，推荐使用
+            :class:`~core.async_router.AsyncRouter`（异步）或
+            :class:`~core.team.Team`（流程编排）。
 
         Args:
             agent_id: Agent ID

@@ -7,14 +7,12 @@ Team 配置接入单元测试
 - build_team 构建 Team（含 Process、leader、members）
 - 示例配置文件 team_example.yaml 可加载
 """
-import json
+
 import pytest
 
-from core.config import ConfigLoader, AppConfig, TeamSpec, ConfigError
-from core.agent import Agent
-from core.message import Message
-from core.llm import LLMClient, ChatResult
-from core.team import Team, SequentialProcess, HierarchicalProcess
+from core.config import ConfigError, ConfigLoader
+from core.llm import ChatResult, LLMClient
+from core.team import HierarchicalProcess, SequentialProcess
 
 
 class FakeLLM(LLMClient):
@@ -30,26 +28,33 @@ def make_loader():
 # team 配置解析
 # --------------------------------------------------------------------
 
+
 class TestTeamParse:
     def test_parse_sequential_team(self):
         loader = make_loader()
-        cfg = loader.parse({
-            "agents": [{"id": "a", "capabilities": ["x"]}, {"id": "b"}],
-            "team": {"name": "组", "process": "sequential", "members": ["a", "b"]},
-        })
+        cfg = loader.parse(
+            {
+                "agents": [{"id": "a", "capabilities": ["x"]}, {"id": "b"}],
+                "team": {"name": "组", "process": "sequential", "members": ["a", "b"]},
+            }
+        )
         assert cfg.team is not None
         assert cfg.team.process == "sequential"
         assert cfg.team.members == ["a", "b"]
 
     def test_parse_hierarchical_team(self):
         loader = make_loader()
-        cfg = loader.parse({
-            "agents": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
-            "team": {
-                "process": "hierarchical", "leader": "c",
-                "members": ["a", "b"], "max_subtasks": 3,
-            },
-        })
+        cfg = loader.parse(
+            {
+                "agents": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+                "team": {
+                    "process": "hierarchical",
+                    "leader": "c",
+                    "members": ["a", "b"],
+                    "max_subtasks": 3,
+                },
+            }
+        )
         assert cfg.team.process == "hierarchical"
         assert cfg.team.leader == "c"
         assert cfg.team.max_subtasks == 3
@@ -77,23 +82,28 @@ class TestTeamParse:
     def test_unknown_leader_raises(self):
         loader = make_loader()
         with pytest.raises(ConfigError, match="未在 agents"):
-            loader.parse({
-                "agents": [{"id": "a"}],
-                "team": {"process": "hierarchical", "leader": "ghost"},
-            })
+            loader.parse(
+                {
+                    "agents": [{"id": "a"}],
+                    "team": {"process": "hierarchical", "leader": "ghost"},
+                }
+            )
 
     def test_unknown_member_raises(self):
         loader = make_loader()
         with pytest.raises(ConfigError, match="未在 agents"):
-            loader.parse({
-                "agents": [{"id": "a"}],
-                "team": {"members": ["ghost"]},
-            })
+            loader.parse(
+                {
+                    "agents": [{"id": "a"}],
+                    "team": {"members": ["ghost"]},
+                }
+            )
 
 
 # --------------------------------------------------------------------
 # build_team 构建
 # --------------------------------------------------------------------
+
 
 class TestBuildTeam:
     def test_build_team_none_when_no_team_block(self):
@@ -103,10 +113,12 @@ class TestBuildTeam:
 
     def test_build_sequential_team(self):
         loader = make_loader()
-        cfg = loader.parse({
-            "agents": [{"id": "a"}, {"id": "b"}],
-            "team": {"process": "sequential", "members": ["a", "b"]},
-        })
+        cfg = loader.parse(
+            {
+                "agents": [{"id": "a"}, {"id": "b"}],
+                "team": {"process": "sequential", "members": ["a", "b"]},
+            }
+        )
         _, agents, _ = loader.build(cfg, llm_client=FakeLLM())
         team = loader.build_team(cfg, agents)
         assert team is not None
@@ -116,10 +128,12 @@ class TestBuildTeam:
 
     def test_build_hierarchical_team(self):
         loader = make_loader()
-        cfg = loader.parse({
-            "agents": [{"id": "a"}, {"id": "b"}, {"id": "leader"}],
-            "team": {"process": "hierarchical", "leader": "leader", "members": ["a", "b"]},
-        })
+        cfg = loader.parse(
+            {
+                "agents": [{"id": "a"}, {"id": "b"}, {"id": "leader"}],
+                "team": {"process": "hierarchical", "leader": "leader", "members": ["a", "b"]},
+            }
+        )
         _, agents, _ = loader.build(cfg, llm_client=FakeLLM())
         team = loader.build_team(cfg, agents)
         assert isinstance(team.process, HierarchicalProcess)
@@ -127,10 +141,12 @@ class TestBuildTeam:
 
     def test_members_defaults_to_all_agents_when_empty(self):
         loader = make_loader()
-        cfg = loader.parse({
-            "agents": [{"id": "a"}, {"id": "b"}],
-            "team": {"process": "sequential"},  # 不指定 members
-        })
+        cfg = loader.parse(
+            {
+                "agents": [{"id": "a"}, {"id": "b"}],
+                "team": {"process": "sequential"},  # 不指定 members
+            }
+        )
         _, agents, _ = loader.build(cfg, llm_client=FakeLLM())
         team = loader.build_team(cfg, agents)
         assert len(team.members) == 2  # 全部 agents 作为成员
@@ -140,12 +156,15 @@ class TestBuildTeam:
 # 示例配置文件集成
 # --------------------------------------------------------------------
 
+
 class TestExampleConfigFile:
     def test_team_example_yaml_loads(self):
         import os
+
         path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "configs", "team_example.yaml",
+            "configs",
+            "team_example.yaml",
         )
         loader = make_loader()
         cfg = loader.load_file(path)

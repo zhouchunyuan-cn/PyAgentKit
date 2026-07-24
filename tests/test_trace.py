@@ -8,13 +8,13 @@ Trace 系统单元测试
 - Agent.think 与 Team.run 的 trace 插桩
 - format_text / to_dict 序列化
 """
+
 import pytest
 
-from core.trace import Tracer, TraceSpan, Trace
 from core.agent import Agent
-from core.message import Message
-from core.llm import LLMClient, ChatResult, TokenUsage
-from core.team import Team, SequentialProcess
+from core.llm import ChatResult, LLMClient, TokenUsage
+from core.team import SequentialProcess, Team
+from core.trace import Tracer, TraceSpan
 
 
 @pytest.fixture(autouse=True)
@@ -34,13 +34,17 @@ def make_agent(aid="a", name="助手"):
     class A(Agent):
         def __init__(self):
             super().__init__(aid, name, llm_client=FakeLLM())
-        def receive(self, m): pass
+
+        def receive(self, m):
+            pass
+
     return A()
 
 
 # --------------------------------------------------------------------
 # Tracer 开关
 # --------------------------------------------------------------------
+
 
 class TestTracerToggle:
     def test_disabled_by_default(self):
@@ -62,6 +66,7 @@ class TestTracerToggle:
 # --------------------------------------------------------------------
 # TraceSpan
 # --------------------------------------------------------------------
+
 
 class TestTraceSpan:
     def test_duration_when_finished(self):
@@ -87,6 +92,7 @@ class TestTraceSpan:
 # --------------------------------------------------------------------
 # Trace 记录与汇总
 # --------------------------------------------------------------------
+
 
 class TestTraceRecording:
     def test_start_end_span_recorded(self):
@@ -139,6 +145,7 @@ class TestTraceRecording:
 # Agent.think 插桩
 # --------------------------------------------------------------------
 
+
 class TestAgentThinkTrace:
     def test_think_recorded_when_enabled(self):
         Tracer.enable()
@@ -163,6 +170,7 @@ class TestAgentThinkTrace:
 # --------------------------------------------------------------------
 # Team.run 插桩
 # --------------------------------------------------------------------
+
 
 class TestTeamTrace:
     def test_team_run_creates_trace(self):
@@ -193,6 +201,7 @@ class TestTeamTrace:
 # 序列化
 # --------------------------------------------------------------------
 
+
 class TestSerialization:
     def test_format_text(self):
         Tracer.enable()
@@ -214,4 +223,5 @@ class TestSerialization:
         assert d["name"] == "d"
         assert len(d["spans"]) == 1
         import json
+
         json.dumps(d)  # 可 JSON 序列化

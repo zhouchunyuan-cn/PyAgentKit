@@ -3,7 +3,9 @@ CalculatorTool 单元测试
 
 覆盖：基础运算、各运算符、一元运算、安全防护（非法字符/危险调用）、错误表达式
 """
+
 import pytest
+
 from core.tools import CalculatorTool
 
 
@@ -81,6 +83,7 @@ class TestCalculatorSecurity:
     - 函数调用（如 __import__）
     - 变量名
     """
+
     def test_rejects_letters(self, calc):
         r = calc.run(expression="abc")
         assert "error" in r

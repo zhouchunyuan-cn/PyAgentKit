@@ -6,9 +6,9 @@ VectorMemory 单元测试
 
 覆盖：存入/计数、语义召回排序、相似度阈值、删除、清空、持久化加载
 """
-import os
+
 import pytest
-import numpy as np
+
 from core.vector_memory import VectorMemory
 
 
@@ -50,9 +50,9 @@ class TestSemanticRecall:
     """语义召回的核心测试"""
 
     def test_recall_returns_related_first(self, vm):
-        vm.add("python 是一门编程语言")          # 含 python/编程/语言
-        vm.add("git 是版本控制工具")              # 含 git/版本/控制
-        vm.add("今天午餐吃了苹果")                # 含 午餐/苹果
+        vm.add("python 是一门编程语言")  # 含 python/编程/语言
+        vm.add("git 是版本控制工具")  # 含 git/版本/控制
+        vm.add("今天午餐吃了苹果")  # 含 午餐/苹果
 
         # 查询"python 编程"应优先召回第一条
         results = vm.search("python 编程", top_k=1)

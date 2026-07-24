@@ -7,24 +7,26 @@ Team 模块单元测试
 - HierarchicalProcess Leader 规划 → 能力匹配 → 汇总，含 JSON 解析失败回退
 - Team.run 串联流程、summary、边界错误
 """
+
 import json
+
 import pytest
 
-from core.team import (
-    Team,
-    Task,
-    SharedContext,
-    SequentialProcess,
-    HierarchicalProcess,
-)
 from core.agent import Agent
+from core.llm import ChatResult, LLMClient
 from core.message import Message
-from core.llm import LLMClient, ChatResult
-
+from core.team import (
+    HierarchicalProcess,
+    SequentialProcess,
+    SharedContext,
+    Task,
+    Team,
+)
 
 # --------------------------------------------------------------------
 # 测试夹具：MockLLM + 可配置的 MockAgent
 # --------------------------------------------------------------------
+
 
 class MockLLM(LLMClient):
     """确定性 Mock LLM，按预设规则产出，不联网"""
@@ -54,11 +56,14 @@ class MockLLM(LLMClient):
 
 def make_agent(agent_id, name, capabilities, llm, tools=None):
     """快速构造一个测试用 Agent"""
+
     class _A(Agent):
         def __init__(self):
             super().__init__(
-                agent_id=agent_id, name=name,
-                llm_client=llm, capabilities=capabilities,
+                agent_id=agent_id,
+                name=name,
+                llm_client=llm,
+                capabilities=capabilities,
             )
 
         def receive(self, message: Message):
@@ -76,6 +81,7 @@ def llm():
 # --------------------------------------------------------------------
 # SharedContext
 # --------------------------------------------------------------------
+
 
 class TestSharedContext:
     def test_add_and_get_output(self):
@@ -120,6 +126,7 @@ class TestSharedContext:
 # --------------------------------------------------------------------
 # SequentialProcess
 # --------------------------------------------------------------------
+
 
 class TestSequentialProcess:
     def test_members_execute_in_order(self, llm):
@@ -170,7 +177,10 @@ class TestSequentialProcess:
         class _NoLLM(Agent):
             def __init__(self):
                 super().__init__("a", "a", llm_client=None)
-            def receive(self, m): pass
+
+            def receive(self, m):
+                pass
+
         with pytest.raises(RuntimeError, match="未配置 LLM"):
             SequentialProcess().execute(Task("t", SharedContext()), [_NoLLM()])
 
@@ -179,16 +189,19 @@ class TestSequentialProcess:
 # HierarchicalProcess
 # --------------------------------------------------------------------
 
+
 class TestHierarchicalProcess:
     def test_leader_plan_executed_by_capability(self):
         """
         Leader 输出 JSON 规划，按能力匹配成员执行，最后汇总。
         """
         # Leader 规划：两个子任务，分别需要 search 和 write 能力
-        plan = json.dumps([
-            {"subtask": "搜索资料", "capability": "search"},
-            {"subtask": "撰写报告", "capability": "write"},
-        ])
+        plan = json.dumps(
+            [
+                {"subtask": "搜索资料", "capability": "search"},
+                {"subtask": "撰写报告", "capability": "write"},
+            ]
+        )
         leader_llm = MockLLM(plan=plan)
         leader = make_agent("leader", "经理", ["plan"], leader_llm)
 
@@ -232,16 +245,18 @@ class TestHierarchicalProcess:
         子任务要求的能力无人具备时，应跳过该子任务而非崩溃，
         最终 Leader 仍能基于已有产出汇总。
         """
-        plan = json.dumps([
-            {"subtask": "子任务A", "capability": "missing_cap"},  # 无人具备
-            {"subtask": "子任务B", "capability": "real_cap"},
-        ])
+        plan = json.dumps(
+            [
+                {"subtask": "子任务A", "capability": "missing_cap"},  # 无人具备
+                {"subtask": "子任务B", "capability": "real_cap"},
+            ]
+        )
         leader_llm = MockLLM(plan=plan)
         leader = make_agent("leader", "经理", ["plan"], leader_llm)
         member = make_agent("m", "成员", ["real_cap"], MockLLM(responses="实际产出"))
 
         task = Task(description="任务", context=SharedContext("任务"))
-        result = HierarchicalProcess().execute(task, [member], leader)
+        HierarchicalProcess().execute(task, [member], leader)
         # real_cap 的成员被调用，missing_cap 被跳过
         assert "m" in task.context.outputs
 
@@ -249,6 +264,7 @@ class TestHierarchicalProcess:
 # --------------------------------------------------------------------
 # Team
 # --------------------------------------------------------------------
+
 
 class TestTeam:
     def test_sequential_team_run(self, llm):

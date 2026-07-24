@@ -8,11 +8,11 @@ AsyncRouter 单元测试
 - 关键：长链路不栈溢出（同步 Router 会 RecursionError 的场景）
 - receive_async 被优先调用
 """
-import asyncio
-import pytest
 
-from core.async_router import AsyncRouter
+import asyncio
+
 from core.agent import Agent
+from core.async_router import AsyncRouter
 from core.message import Message
 
 
@@ -65,6 +65,7 @@ class AsyncStubAgent(Agent):
 # 基本异步路由
 # --------------------------------------------------------------------
 
+
 class TestAsyncRouting:
     def test_message_delivered_async(self):
         async def run():
@@ -77,6 +78,7 @@ class TestAsyncRouting:
             await r.stop()
             assert len(a.received) == 1
             assert a.received[0].content == "hello"
+
         run_async(run())
 
     def test_unknown_agent_counted_as_error(self):
@@ -87,6 +89,7 @@ class TestAsyncRouting:
             await r.drain()
             await r.stop()
             assert r.stats["routing_errors"] >= 1
+
         run_async(run())
 
     def test_stats_counters(self):
@@ -101,12 +104,14 @@ class TestAsyncRouting:
             stats = r.get_router_stats()["stats"]
             assert stats["messages_sent"] == 1
             assert stats["messages_received"] == 1
+
         run_async(run())
 
 
 # --------------------------------------------------------------------
 # 关键：长链路不栈溢出
 # --------------------------------------------------------------------
+
 
 class TestNoStackOverflow:
     """
@@ -129,12 +134,14 @@ class TestNoStackOverflow:
             await r.stop()
             # 应正常完成 50 跳（不 RecursionError）
             assert a.count + b.count >= 50
+
         run_async(run())
 
 
 # --------------------------------------------------------------------
 # broadcast
 # --------------------------------------------------------------------
+
 
 class TestAsyncBroadcast:
     def test_broadcast_reaches_all(self):
@@ -154,12 +161,14 @@ class TestAsyncBroadcast:
             assert len(b.received) == 1
             assert len(c.received) == 1
             assert len(a.received) == 0
+
         run_async(run())
 
 
 # --------------------------------------------------------------------
 # receive_async 优先
 # --------------------------------------------------------------------
+
 
 class TestReceiveAsync:
     def test_receive_async_preferred(self):
@@ -174,6 +183,7 @@ class TestReceiveAsync:
             # 异步路径被调用，同步路径不被调用
             assert len(a.async_received) == 1
             assert len(a.sync_received) == 0
+
         run_async(run())
 
 
@@ -181,12 +191,14 @@ class TestReceiveAsync:
 # 异常边界
 # --------------------------------------------------------------------
 
+
 class TestExceptionBoundary:
     def test_crashing_agent_does_not_break_router(self):
         async def run():
             class CrashAgent(Agent):
                 def __init__(self):
                     super().__init__("crash", "crash")
+
                 def receive(self, message):
                     raise RuntimeError("故意崩溃")
 
@@ -194,6 +206,7 @@ class TestExceptionBoundary:
                 def __init__(self):
                     super().__init__("ok", "ok")
                     self.got = []
+
                 def receive(self, message):
                     self.got.append(message)
 
@@ -210,4 +223,5 @@ class TestExceptionBoundary:
             # 崩溃 agent 不影响后续消息处理
             assert r.stats["routing_errors"] >= 1
             assert len(ok.got) == 1
+
         run_async(run())

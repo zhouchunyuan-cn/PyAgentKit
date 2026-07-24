@@ -4,15 +4,17 @@ MemoryManager 单元测试
 验证三通道（KV / 向量 / 会话）的委托，以及核心的 build_context 聚合逻辑。
 向量通道用 FakeEmbedder（确定性，不联网）。
 """
+
 import pytest
 
-from core.memory_manager import MemoryManager
 from core.memory import Memory
+from core.memory_manager import MemoryManager
 from core.vector_memory import VectorMemory
 
 
 class FakeEmbedder:
     """确定性词袋向量化器（复用自 vector_memory 测试思路）"""
+
     VOCAB = ["python", "编程", "语言", "git", "版本", "控制", "苹果"]
 
     def embed(self, text: str) -> list:
@@ -35,6 +37,7 @@ def brain(tmp_path):
 # KV 通道
 # --------------------------------------------------------------------
 
+
 class TestKVChannel:
     def test_remember_recall(self, brain):
         brain.remember("name", "小明")
@@ -52,6 +55,7 @@ class TestKVChannel:
 # --------------------------------------------------------------------
 # 向量通道
 # --------------------------------------------------------------------
+
 
 class TestVectorChannel:
     def test_learn_and_recall_relevant(self, brain):
@@ -71,6 +75,7 @@ class TestVectorChannel:
 # --------------------------------------------------------------------
 # 会话通道
 # --------------------------------------------------------------------
+
 
 class TestConversationChannel:
     def test_record_and_get(self, brain):
@@ -105,6 +110,7 @@ class TestConversationChannel:
 # --------------------------------------------------------------------
 # build_context 聚合（核心）
 # --------------------------------------------------------------------
+
 
 class TestBuildContext:
     def test_basic_user_input_always_last(self, brain):
@@ -163,6 +169,7 @@ class TestBuildContext:
 # 后端可选性（降级）
 # --------------------------------------------------------------------
 
+
 class TestBackendOptional:
     def test_works_without_vector_memory(self, tmp_path):
         """无向量后端时，build_context 仍正常工作，learn/recall_relevant 降级"""
@@ -187,6 +194,7 @@ class TestBackendOptional:
 # --------------------------------------------------------------------
 # summary
 # --------------------------------------------------------------------
+
 
 class TestSummary:
     def test_summary_fields(self, brain):

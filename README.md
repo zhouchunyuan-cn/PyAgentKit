@@ -4,6 +4,8 @@
 
 PyAgentKit 让你用最少的代码构建能**思考、调用工具、记忆上下文、彼此协作、团队编排**的 AI Agent。支持命令行交互、YAML 声明式编排、流式输出、Token 统计与执行追踪，以及完整的多智能体编程接口。
 
+📚 **[开发教程（8 章 + 实战）](docs/README.md)** — 从 ReAct 原理到团队协作，循序渐进讲透每个模块的设计与实现。新手建议从 [快速开始](docs/01_快速开始.md) 读起。
+
 ```bash
 # 一行命令开始对话（自带网络搜索 + 计算）
 pyagentkit chat --tools web_search calculator

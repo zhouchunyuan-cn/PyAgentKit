@@ -3,7 +3,9 @@ Message 模块单元测试
 
 覆盖：属性、唯一 ID、metadata、序列化、大小估算、字符串表示
 """
+
 import pytest
+
 from core.message import Message
 
 
@@ -60,6 +62,7 @@ class TestMessageSerialization:
     def test_to_dict_is_json_serializable(self, msg):
         """to_dict 结果必须可 JSON 序列化（含 timestamp）"""
         import json
+
         # 不应抛异常
         json.dumps(msg.to_dict())
 

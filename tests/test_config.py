@@ -8,13 +8,15 @@
 - build() 构建运行时对象（用 fake LLM 避免联网）
 - 示例配置文件 configs/example.yaml 可被正确加载
 """
+
 import os
+
 import pytest
 
-from core.tool_factory import ToolFactory, default_factory, ToolNotFoundError
-from core.config import ConfigLoader, AppConfig, AgentSpec, ConfigError
+from core.config import ConfigError, ConfigLoader
+from core.llm import ChatResult, LLMClient
+from core.tool_factory import ToolFactory, ToolNotFoundError, default_factory
 from core.tools import CalculatorTool, WebSearchTool
-from core.llm import LLMClient, ChatResult
 
 
 # --------------------------------------------------------------------
@@ -70,11 +72,7 @@ class TestToolFactory:
 # --------------------------------------------------------------------
 class TestConfigParse:
     def test_parse_valid_minimal(self, loader):
-        raw = {
-            "agents": [
-                {"id": "a1", "name": "助手", "system_prompt": "你好"}
-            ]
-        }
+        raw = {"agents": [{"id": "a1", "name": "助手", "system_prompt": "你好"}]}
         config = loader.parse(raw)
         assert config.model == "glm-4-flash"  # 默认
         assert len(config.agents) == 1
@@ -120,16 +118,20 @@ class TestConfigParse:
 
     def test_unknown_session_agent_raises(self, loader):
         with pytest.raises(ConfigError, match="session.agent"):
-            loader.parse({
-                "agents": [{"id": "a"}],
-                "session": {"agent": "missing"},
-            })
+            loader.parse(
+                {
+                    "agents": [{"id": "a"}],
+                    "session": {"agent": "missing"},
+                }
+            )
 
     def test_duplicate_agent_id_raises(self, loader):
         with pytest.raises(ConfigError, match="重复"):
-            loader.parse({
-                "agents": [{"id": "a"}, {"id": "a"}],
-            })
+            loader.parse(
+                {
+                    "agents": [{"id": "a"}, {"id": "a"}],
+                }
+            )
 
 
 # --------------------------------------------------------------------
@@ -137,12 +139,14 @@ class TestConfigParse:
 # --------------------------------------------------------------------
 class TestConfigBuild:
     def test_build_creates_agents_and_session(self, loader):
-        config = loader.parse({
-            "agents": [
-                {"id": "a1", "tools": ["calculator"]},
-            ],
-            "session": {"agent": "a1"},
-        })
+        config = loader.parse(
+            {
+                "agents": [
+                    {"id": "a1", "tools": ["calculator"]},
+                ],
+                "session": {"agent": "a1"},
+            }
+        )
         llm, agents, session = loader.build(config, llm_client=FakeLLM())
 
         assert "a1" in agents
@@ -153,13 +157,15 @@ class TestConfigBuild:
         assert session.agent is agent
 
     def test_build_with_multiple_agents(self, loader):
-        config = loader.parse({
-            "agents": [
-                {"id": "a1", "capabilities": ["chat"]},
-                {"id": "a2", "capabilities": ["analysis"], "tools": ["calculator"]},
-            ],
-            "session": {"agent": "a2"},
-        })
+        config = loader.parse(
+            {
+                "agents": [
+                    {"id": "a1", "capabilities": ["chat"]},
+                    {"id": "a2", "capabilities": ["analysis"], "tools": ["calculator"]},
+                ],
+                "session": {"agent": "a2"},
+            }
+        )
         llm, agents, session = loader.build(config, llm_client=FakeLLM())
         assert set(agents.keys()) == {"a1", "a2"}
         # 会话绑定 a2
@@ -179,7 +185,8 @@ class TestExampleConfigFile:
         """项目自带的示例配置应能被正确加载"""
         path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "configs", "example.yaml",
+            "configs",
+            "example.yaml",
         )
         assert os.path.exists(path), f"示例配置不存在: {path}"
         config = loader.load_file(path)

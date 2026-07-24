@@ -4,7 +4,9 @@ ConversationSession / SessionManager 单元测试
 用 MockAgent 记录每次 think 收到的 context_messages，
 验证多轮对话的上下文注入与滑动窗口裁剪，无需联网。
 """
+
 import pytest
+
 from core.session import ConversationSession, SessionManager
 
 

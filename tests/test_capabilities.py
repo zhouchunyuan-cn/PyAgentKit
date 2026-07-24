@@ -4,16 +4,16 @@ Agent 能力声明 & 协作策略单元测试
 验证 P2 核心改造：协作匹配基于能力声明而非硬编码 Agent 名称。
 所有测试用桩 Agent，不依赖 LLM 或网络。
 """
+
 import pytest
+
 from core.agent import Agent
-from core.message import Message
-from core.router import Router
 from core.collaboration import (
     CapabilityCollaborationStrategy,
-    ResearchCollaborationStrategy,
-    AnalysisCollaborationStrategy,
     DynamicCollaborationManager,
+    ResearchCollaborationStrategy,
 )
+from core.router import Router
 
 
 class StubAgent(Agent):
@@ -57,7 +57,8 @@ class TestCapabilityStrategy:
         即使名字叫 RandomName，只要有 search 能力就应被选中
         """
         strategy = CapabilityCollaborationStrategy(
-            name="test", description="t",
+            name="test",
+            description="t",
             required_capabilities=["search", "write"],
         )
         # 名字完全看不出功能，但声明了正确能力
@@ -72,7 +73,8 @@ class TestCapabilityStrategy:
 
     def test_assign_roles_by_capability(self):
         strategy = CapabilityCollaborationStrategy(
-            name="test", description="t",
+            name="test",
+            description="t",
             required_capabilities=["search", "write"],
         )
         a = StubAgent("x", "X", capabilities=["search"])
@@ -83,7 +85,8 @@ class TestCapabilityStrategy:
 
     def test_entry_agent_by_capability(self):
         strategy = CapabilityCollaborationStrategy(
-            name="test", description="t",
+            name="test",
+            description="t",
             required_capabilities=["search", "write"],
             entry_capability="search",
         )
