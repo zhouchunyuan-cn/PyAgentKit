@@ -1,31 +1,41 @@
 # PyAgentKit Core Package
+#
+# 版本号：与 pyproject.toml 的 [project].version 保持同步。
+# 安装后可通过 importlib.metadata 读取（兼容 pip install -e 场景）。
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    __version__ = _pkg_version("pyagentkit")
+except PackageNotFoundError:  # 未安装为包（如直接从源码运行）
+    __version__ = "0.0.0+local"
 
 from .agent import Agent
-from .message import Message
-from .router import Router
-from .memory import Memory
-from .memory_manager import MemoryManager
-from .tools import Tool, WebSearchTool, CalculatorTool, FileReadTool, DatabaseTool, ToolRegistry
-from .mcp_tools import MCPTool, MCPToolRegistry, MCPIntegrationTool
-from .orchestrator import Orchestrator
-from .llm import LLMClient, GLMClient, ChatResult, ToolCall, TokenUsage, StreamChunk
+from .async_router import AsyncRouter
 from .collaboration import (
-    CollaborationStrategy,
     CapabilityCollaborationStrategy,
+    CollaborationStrategy,
     DynamicCollaborationManager,
 )
-from .vector_memory import VectorMemory, GLMEmbedder, LocalTfidfEmbedder, Embedder
+from .llm import ChatResult, GLMClient, LLMClient, StreamChunk, TokenUsage, ToolCall
+from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
+from .memory import Memory
+from .memory_manager import MemoryManager
+from .message import Message
+from .orchestrator import Orchestrator
+from .router import Router
 from .session import ConversationSession, SessionManager
 from .team import (
-    Team,
+    HierarchicalProcess,
     Process,
     SequentialProcess,
-    HierarchicalProcess,
     SharedContext,
     Task,
+    Team,
 )
-from .async_router import AsyncRouter
-from .trace import Tracer, Trace, TraceSpan
+from .tools import CalculatorTool, DatabaseTool, FileReadTool, Tool, ToolRegistry, WebSearchTool
+from .trace import Trace, Tracer, TraceSpan
+from .vector_memory import Embedder, GLMEmbedder, LocalTfidfEmbedder, VectorMemory
 
 __all__ = [
     "Agent",

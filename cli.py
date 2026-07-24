@@ -12,6 +12,7 @@ PyAgentKit 命令行入口
 安装为命令：在项目根目录 `pip install -e .` 后可用 `pyagentkit`，
 也可直接 `python cli.py ...`。
 """
+
 import argparse
 import os
 import sys
@@ -19,15 +20,16 @@ import sys
 # 自动加载 .env
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
 
+from core.agent import Agent
+from core.config import ConfigLoader
 from core.llm import GLMClient
 from core.logging_config import setup_logging
 from core.session import ConversationSession
-from core.agent import Agent
-from core.config import ConfigLoader
 
 
 def _ensure_api_key():
@@ -42,6 +44,7 @@ def _ensure_api_key():
 
 def _default_agent(model: str, tools=None) -> Agent:
     """构建一个默认的通用助手 Agent"""
+
     class _Assistant(Agent):
         def __init__(self, llm, tool_list):
             super().__init__(
@@ -51,7 +54,7 @@ def _default_agent(model: str, tools=None) -> Agent:
                 llm_client=llm,
                 capabilities=["chat"],
             )
-            for t in (tool_list or []):
+            for t in tool_list or []:
                 self.tool_registry.register(t)
 
         def receive(self, message):
@@ -91,6 +94,7 @@ def _interactive_loop(session: ConversationSession, prompt: str = "你") -> None
 # --------------------------------------------------------------------
 # 子命令实现
 # --------------------------------------------------------------------
+
 
 def cmd_chat(args):
     """交互式对话（默认通用助手）"""
@@ -136,8 +140,10 @@ def cmd_run(args):
     # 若配置含 team 块，进入团队协作模式
     team = loader.build_team(config, agents)
     if team is not None:
-        print(f"团队模式：{team.name}（{team.process.name}流程），"
-              f"成员={[m.agent_id for m in team.members]}")
+        print(
+            f"团队模式：{team.name}（{team.process.name}流程），"
+            f"成员={[m.agent_id for m in team.members]}"
+        )
         if team.leader:
             print(f"Leader：{team.leader.agent_id}")
         print()
@@ -165,7 +171,7 @@ def _team_interactive_loop(team):
             print(team.summary())
             continue
         try:
-            print(f"\n[团队执行中...]\n")
+            print("\n[团队执行中...]\n")
             result = team.run(task)
             print("--- 团队最终结果 ---")
             print(result)
@@ -177,6 +183,7 @@ def _team_interactive_loop(team):
 def cmd_list_tools(args):
     """列出所有可用的内置工具名"""
     from core.tool_factory import default_factory
+
     print("可用工具：")
     for name in default_factory.list_tools():
         print(f"  - {name}")
@@ -185,6 +192,7 @@ def cmd_list_tools(args):
 # --------------------------------------------------------------------
 # 参数解析
 # --------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(

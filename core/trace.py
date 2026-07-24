@@ -22,11 +22,11 @@
     print(trace.format_text())
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -41,15 +41,16 @@ class TraceSpan:
         attributes: 自由属性（token 数、输入摘要、工具名等）
         parent_id: 父 span id（构建嵌套关系，如 think 内的工具调用）
     """
+
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     name: str = ""
     start: float = 0.0
-    end: Optional[float] = None
-    attributes: Dict[str, Any] = field(default_factory=dict)
-    parent_id: Optional[str] = None
+    end: float | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
+    parent_id: str | None = None
 
     @property
-    def duration(self) -> Optional[float]:
+    def duration(self) -> float | None:
         """耗时（秒）；未结束返回 None"""
         if self.end is None:
             return None
@@ -74,13 +75,14 @@ class Trace:
         spans: 所有 span，按记录顺序
         started_at: trace 开始时间
     """
+
     name: str = ""
-    spans: List[TraceSpan] = field(default_factory=list)
+    spans: list[TraceSpan] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
-    ended_at: Optional[float] = None
+    ended_at: float | None = None
 
     @property
-    def duration(self) -> Optional[float]:
+    def duration(self) -> float | None:
         if self.ended_at is None:
             return None
         return self.ended_at - self.started_at
@@ -116,7 +118,7 @@ class Trace:
             lines.append(f"{indent}{s.name:<30} {dur:>8}{attr_str}")
         return "\n".join(lines)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """序列化为字典（便于 JSON 导出）"""
         return {
             "name": self.name,
@@ -126,9 +128,13 @@ class Trace:
             "total_tokens": self.total_tokens(),
             "spans": [
                 {
-                    "id": s.id, "name": s.name,
-                    "start": s.start, "end": s.end, "duration": s.duration,
-                    "attributes": s.attributes, "parent_id": s.parent_id,
+                    "id": s.id,
+                    "name": s.name,
+                    "start": s.start,
+                    "end": s.end,
+                    "duration": s.duration,
+                    "attributes": s.attributes,
+                    "parent_id": s.parent_id,
                 }
                 for s in self.spans
             ],
@@ -161,7 +167,7 @@ class Tracer:
         return cls._enabled
 
     @classmethod
-    def start_trace(cls, name: str) -> Optional[Trace]:
+    def start_trace(cls, name: str) -> Trace | None:
         """开始一个新的 trace（成为当前线程的活跃 trace）"""
         if not cls._enabled:
             return None
@@ -171,11 +177,11 @@ class Tracer:
         return trace
 
     @classmethod
-    def end_trace(cls) -> Optional[Trace]:
+    def end_trace(cls) -> Trace | None:
         """结束当前 trace 并返回"""
         if not cls._enabled:
             return None
-        trace: Optional[Trace] = getattr(cls._local, "current_trace", None)
+        trace: Trace | None = getattr(cls._local, "current_trace", None)
         if trace is not None:
             trace.ended_at = time.time()
             cls._local.current_trace = None
@@ -183,21 +189,23 @@ class Tracer:
         return trace
 
     @classmethod
-    def current_trace(cls) -> Optional[Trace]:
+    def current_trace(cls) -> Trace | None:
         return getattr(cls._local, "current_trace", None)
 
     @classmethod
-    def start_span(cls, name: str, **attributes) -> Optional[TraceSpan]:
+    def start_span(cls, name: str, **attributes) -> TraceSpan | None:
         """开始一个 span（自动加到当前 trace）"""
         if not cls._enabled:
             return None
         trace = cls.current_trace()
         if trace is None:
             return None
-        stack: List[str] = getattr(cls._local, "span_stack", [])
+        stack: list[str] = getattr(cls._local, "span_stack", [])
         parent = stack[-1] if stack else None
         span = TraceSpan(
-            name=name, start=time.time(), parent_id=parent,
+            name=name,
+            start=time.time(),
+            parent_id=parent,
             attributes=dict(attributes),
         )
         trace.add_span(span)
@@ -206,20 +214,20 @@ class Tracer:
         return span
 
     @classmethod
-    def end_span(cls, span: Optional[TraceSpan], **extra_attributes) -> None:
+    def end_span(cls, span: TraceSpan | None, **extra_attributes) -> None:
         """结束一个 span，可补充属性"""
         if not cls._enabled or span is None:
             return
         span.finish()
         for k, v in extra_attributes.items():
             span.set(k, v)
-        stack: List[str] = getattr(cls._local, "span_stack", [])
+        stack: list[str] = getattr(cls._local, "span_stack", [])
         if span.id in stack:
             stack.remove(span.id)
             cls._local.span_stack = stack
 
     @classmethod
-    def record(cls, name: str, duration: Optional[float] = None, **attributes) -> None:
+    def record(cls, name: str, duration: float | None = None, **attributes) -> None:
         """记录一个即时 span（已有耗时，无需 start/end 配对）"""
         if not cls._enabled:
             return

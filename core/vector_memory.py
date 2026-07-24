@@ -10,16 +10,17 @@
 - 相似度计算用 numpy + sklearn cosine，零新增重依赖（均为已装库）
 - 支持持久化（可选）：保存记忆条目到 JSON，向量在加载时重新生成
 """
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+
 import json
-import os
 import logging
-import uuid
+import os
 import re
+import uuid
+from typing import Any, Protocol
 
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class Embedder(Protocol):
     任何实现 embed(text) -> List[float] 的对象均可作为 embedder。
     """
 
-    def embed(self, text: str) -> List[float]: ...
+    def embed(self, text: str) -> list[float]: ...
 
 
 class GLMEmbedder:
@@ -41,7 +42,7 @@ class GLMEmbedder:
     复用项目已有的 zhipuai SDK 与 API Key。语义效果最佳，但需消耗 embedding 额度。
     """
 
-    def __init__(self, model: str = "embedding-3", api_key: Optional[str] = None):
+    def __init__(self, model: str = "embedding-3", api_key: str | None = None):
         resolved_key = api_key or os.environ.get("ZHIPUAI_API_KEY")
         if not resolved_key:
             raise RuntimeError(
@@ -56,23 +57,80 @@ class GLMEmbedder:
         self.model = model
         self._client = ZhipuAI(api_key=resolved_key)
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         """将文本转为向量"""
         response = self._client.embeddings.create(model=self.model, input=text)
         return response.data[0].embedding
 
 
 # 中文常用停用词，提升 TF-IDF 向量质量
-_ZH_STOP_WORDS = frozenset([
-    "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一",
-    "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有",
-    "看", "好", "自己", "这", "那", "它", "他", "她", "与", "及", "或", "但",
-    "而", "则", "于", "对", "为", "以", "可", "能", "把", "被", "使", "让",
-    "the", "a", "an", "is", "are", "of", "to", "in", "on", "and", "or", "for",
-])
+_ZH_STOP_WORDS = frozenset(
+    [
+        "的",
+        "了",
+        "是",
+        "在",
+        "我",
+        "有",
+        "和",
+        "就",
+        "不",
+        "人",
+        "都",
+        "一",
+        "一个",
+        "上",
+        "也",
+        "很",
+        "到",
+        "说",
+        "要",
+        "去",
+        "你",
+        "会",
+        "着",
+        "没有",
+        "看",
+        "好",
+        "自己",
+        "这",
+        "那",
+        "它",
+        "他",
+        "她",
+        "与",
+        "及",
+        "或",
+        "但",
+        "而",
+        "则",
+        "于",
+        "对",
+        "为",
+        "以",
+        "可",
+        "能",
+        "把",
+        "被",
+        "使",
+        "让",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "of",
+        "to",
+        "in",
+        "on",
+        "and",
+        "or",
+        "for",
+    ]
+)
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     """
     轻量分词：中文按字、英文按词。
 
@@ -100,11 +158,11 @@ class LocalTfidfEmbedder:
     """
 
     def __init__(self):
-        self._vectorizer: Optional[TfidfVectorizer] = None
-        self._corpus: List[str] = []
+        self._vectorizer: TfidfVectorizer | None = None
+        self._corpus: list[str] = []
         self._fitted = False
 
-    def _ensure_fitted(self, texts: List[str]) -> None:
+    def _ensure_fitted(self, texts: list[str]) -> None:
         """用给定文本拟合 TF-IDF（仅在首次或语料扩充时）"""
         all_texts = self._corpus + [t for t in texts if t not in self._corpus]
         self._corpus = all_texts
@@ -119,7 +177,7 @@ class LocalTfidfEmbedder:
             # 语料全为空或分词后无有效 token 时，fit 会失败
             self._fitted = False
 
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         """将文本转为 TF-IDF 向量（会扩展词表，用于存入记忆）"""
         if not self._fitted or text.strip():
             self._ensure_fitted([text])
@@ -131,7 +189,7 @@ class LocalTfidfEmbedder:
         vec = self._vectorizer.transform([text])
         return vec.toarray()[0].tolist()
 
-    def transform(self, text: str) -> List[float]:
+    def transform(self, text: str) -> list[float]:
         """
         用已 fit 的固定词表转换文本（不扩展词表，用于查询）
 
@@ -163,8 +221,8 @@ class VectorMemory:
 
     def __init__(
         self,
-        embedder: Optional[Embedder] = None,
-        persistence_path: Optional[str] = None,
+        embedder: Embedder | None = None,
+        persistence_path: str | None = None,
         min_similarity: float = 0.0,
     ):
         """
@@ -178,10 +236,10 @@ class VectorMemory:
         self.min_similarity = min_similarity
 
         # 条目存储：id -> {"text", "metadata", "vector"}
-        self._items: Dict[str, Dict[str, Any]] = {}
+        self._items: dict[str, dict[str, Any]] = {}
         # 缓存向量矩阵与对应 id 顺序，加速相似度计算
-        self._ids_in_order: List[str] = []
-        self._matrix: Optional[np.ndarray] = None
+        self._ids_in_order: list[str] = []
+        self._matrix: np.ndarray | None = None
 
         if persistence_path:
             self._load()
@@ -189,7 +247,9 @@ class VectorMemory:
     # ------------------------------------------------------------------
     # 写入
     # ------------------------------------------------------------------
-    def add(self, text: str, metadata: Optional[Dict[str, Any]] = None, item_id: Optional[str] = None) -> str:
+    def add(
+        self, text: str, metadata: dict[str, Any] | None = None, item_id: str | None = None
+    ) -> str:
         """
         存入一条记忆
 
@@ -235,8 +295,8 @@ class VectorMemory:
         self,
         query: str,
         top_k: int = 3,
-        min_similarity: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
+        min_similarity: float | None = None,
+    ) -> list[dict[str, Any]]:
         """
         按语义相似度召回最相关的记忆
 
@@ -263,9 +323,8 @@ class VectorMemory:
         sims = cosine_similarity(query_vec, self._matrix)[0]  # shape: (n,)
 
         # 组装结果并按相似度降序
-        scored: List[Tuple[float, str]] = [
-            (float(sims[idx]), self._ids_in_order[idx])
-            for idx in range(len(self._ids_in_order))
+        scored: list[tuple[float, str]] = [
+            (float(sims[idx]), self._ids_in_order[idx]) for idx in range(len(self._ids_in_order))
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
 
@@ -274,15 +333,17 @@ class VectorMemory:
             if sim < threshold:
                 continue
             item = self._items[item_id]
-            results.append({
-                "id": item_id,
-                "text": item["text"],
-                "metadata": item["metadata"],
-                "similarity": sim,
-            })
+            results.append(
+                {
+                    "id": item_id,
+                    "text": item["text"],
+                    "metadata": item["metadata"],
+                    "similarity": sim,
+                }
+            )
         return results
 
-    def recall_semantic(self, query: str, top_k: int = 3) -> List[str]:
+    def recall_semantic(self, query: str, top_k: int = 3) -> list[str]:
         """
         便捷方法：仅返回最相关记忆的文本（常见于 Agent 注入上下文）
 
@@ -327,7 +388,7 @@ class VectorMemory:
             embedder._ensure_fitted(all_texts)
         vectors = [embedder.embed(self._items[i]["text"]) for i in self._ids_in_order]
         # 缓存向量到条目（供持久化之外的快速访问）
-        for iid, vec in zip(self._ids_in_order, vectors):
+        for iid, vec in zip(self._ids_in_order, vectors, strict=False):
             self._items[iid]["vector"] = vec
         self._matrix = np.array(vectors)
 
@@ -348,7 +409,7 @@ class VectorMemory:
         if not (self.persistence_path and os.path.exists(self.persistence_path)):
             return
         try:
-            with open(self.persistence_path, "r", encoding="utf-8") as f:
+            with open(self.persistence_path, encoding="utf-8") as f:
                 data = json.load(f)
             for entry in data:
                 item_id = entry.get("id") or str(uuid.uuid4())

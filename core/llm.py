@@ -6,12 +6,12 @@ LLM 客户端抽象层
 未来可扩展 OpenAI / Ollama 等其他后端。
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 import json
 import os
 import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 
 @dataclass
@@ -24,9 +24,10 @@ class ToolCall:
         name: 要调用的工具名称
         arguments: 工具参数（已反序列化为字典）
     """
+
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
 
 
 @dataclass
@@ -40,8 +41,9 @@ class ChatResult:
         finish_reason: 结束原因 ("stop" / "tool_calls" / "length" 等)
         usage: token 用量统计，None 表示模型未返回
     """
+
     content: str
-    tool_calls: List[ToolCall] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: Optional["TokenUsage"] = None
 
@@ -56,6 +58,7 @@ class TokenUsage:
         completion_tokens: 输出 token 数
         total_tokens: 总 token 数
     """
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -79,9 +82,10 @@ class StreamChunk:
         finish_reason: 本块触发的结束原因；None 表示还在继续
         usage: 仅最后一块可能携带，汇总用量
     """
+
     delta_content: str = ""
-    finish_reason: Optional[str] = None
-    usage: Optional[TokenUsage] = None
+    finish_reason: str | None = None
+    usage: TokenUsage | None = None
 
 
 class LLMClient(ABC):
@@ -95,8 +99,8 @@ class LLMClient(ABC):
     @abstractmethod
     def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ) -> ChatResult:
         """
@@ -115,8 +119,8 @@ class LLMClient(ABC):
 
     def chat_stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ):
         """
@@ -152,7 +156,7 @@ class GLMClient(LLMClient):
     def __init__(
         self,
         model: str = "glm-4-flash",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
     ):
@@ -178,9 +182,7 @@ class GLMClient(LLMClient):
         try:
             from zhipuai import ZhipuAI
         except ImportError as e:
-            raise ImportError(
-                "未安装 zhipuai SDK，请运行：pip install zhipuai"
-            ) from e
+            raise ImportError("未安装 zhipuai SDK，请运行：pip install zhipuai") from e
 
         self.model = model
         self.max_retries = max_retries
@@ -189,8 +191,8 @@ class GLMClient(LLMClient):
 
     def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ) -> ChatResult:
         """
@@ -205,7 +207,7 @@ class GLMClient(LLMClient):
             ChatResult: 统一返回结果
         """
         # 组装请求参数（仅在有工具时传入 tools / tool_choice）
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
         }
@@ -214,7 +216,7 @@ class GLMClient(LLMClient):
             kwargs["tool_choice"] = tool_choice
 
         # 带重试的请求
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
                 response = self.client.chat.completions.create(**kwargs)
@@ -222,7 +224,7 @@ class GLMClient(LLMClient):
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries and self._is_retryable(e):
-                    delay = self.retry_base_delay * (2 ** attempt)
+                    delay = self.retry_base_delay * (2**attempt)
                     time.sleep(delay)
                     continue
                 # 不可重试或重试次数耗尽，直接抛出
@@ -233,8 +235,8 @@ class GLMClient(LLMClient):
 
     def chat_stream(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ):
         """
@@ -243,7 +245,7 @@ class GLMClient(LLMClient):
         文本增量通过 delta_content 产出；token 用量通常在最后一个 chunk 携带。
         流式不重试（流中断难以安全重发），失败即抛出。
         """
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
@@ -290,7 +292,7 @@ class GLMClient(LLMClient):
         content = getattr(message, "content", None) or ""
 
         # 提取工具调用
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         raw_tool_calls = getattr(message, "tool_calls", None)
         if raw_tool_calls:
             for tc in raw_tool_calls:
@@ -301,21 +303,27 @@ class GLMClient(LLMClient):
                 name = getattr(func, "name", "")
                 raw_args = getattr(func, "arguments", "{}")
                 try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                    arguments = (
+                        json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                    )
                 except (json.JSONDecodeError, TypeError):
                     arguments = {}
-                tool_calls.append(ToolCall(id=getattr(tc, "id", ""), name=name, arguments=arguments))
+                tool_calls.append(
+                    ToolCall(id=getattr(tc, "id", ""), name=name, arguments=arguments)
+                )
 
         # 提取 token 用量（response.usage，GLM 与 OpenAI 兼容字段）
         usage = self._extract_usage(response)
 
         return ChatResult(
-            content=content, tool_calls=tool_calls,
-            finish_reason=finish_reason, usage=usage,
+            content=content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
         )
 
     @staticmethod
-    def _extract_usage(response: Any) -> Optional[TokenUsage]:
+    def _extract_usage(response: Any) -> TokenUsage | None:
         """从响应中提取 token 用量，缺失字段视为 0"""
         usage_obj = getattr(response, "usage", None)
         if usage_obj is None:

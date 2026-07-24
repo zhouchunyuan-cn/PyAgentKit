@@ -18,10 +18,11 @@ YAML 配置驱动
 
 ConfigLoader 负责解析 YAML 并构建运行时对象（LLM、Agent 列表、Session）。
 """
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-import os
+
 import logging
+import os
+from dataclasses import dataclass, field
+from typing import Any
 
 from .agent import Agent
 from .llm import GLMClient, LLMClient
@@ -38,35 +39,38 @@ class ConfigError(ValueError):
 @dataclass
 class AgentSpec:
     """单个 Agent 的配置规格"""
+
     id: str
     name: str
     system_prompt: str = ""
-    capabilities: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
-    tools: List[str] = field(default_factory=list)
+    capabilities: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
     max_steps: int = Agent.DEFAULT_MAX_STEPS
 
 
 @dataclass
 class TeamSpec:
     """团队的配置规格"""
+
     name: str = "team"
-    process: str = "sequential"          # "sequential" 或 "hierarchical"
-    leader: Optional[str] = None          # hierarchical 模式下的 leader agent id
-    members: List[str] = field(default_factory=list)  # 成员 agent id 列表；为空时用全部 agents
-    max_subtasks: int = 5                 # hierarchical 用
-    max_steps: int = 10                   # hierarchical 用
+    process: str = "sequential"  # "sequential" 或 "hierarchical"
+    leader: str | None = None  # hierarchical 模式下的 leader agent id
+    members: list[str] = field(default_factory=list)  # 成员 agent id 列表；为空时用全部 agents
+    max_subtasks: int = 5  # hierarchical 用
+    max_steps: int = 10  # hierarchical 用
 
 
 @dataclass
 class AppConfig:
     """整份配置解析后的规格"""
+
     model: str = "glm-4-flash"
-    agents: List[AgentSpec] = field(default_factory=list)
-    session_agent: Optional[str] = None
-    session_system_context: Optional[str] = None
+    agents: list[AgentSpec] = field(default_factory=list)
+    session_agent: str | None = None
+    session_system_context: str | None = None
     session_max_history: int = 10
-    team: Optional[TeamSpec] = None       # 声明 team 块后启用团队模式
+    team: TeamSpec | None = None  # 声明 team 块后启用团队模式
 
 
 class ConfigLoader:
@@ -76,7 +80,7 @@ class ConfigLoader:
     解析 YAML -> AppConfig -> 构建运行时对象（LLM、Agent、Session）。
     """
 
-    def __init__(self, tool_factory: Optional[ToolFactory] = None):
+    def __init__(self, tool_factory: ToolFactory | None = None):
         self.tool_factory = tool_factory or default_factory
 
     # ------------------------------------------------------------------
@@ -92,13 +96,13 @@ class ConfigLoader:
         if not os.path.exists(path):
             raise ConfigError(f"配置文件不存在: {path}")
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):
             raise ConfigError("配置根节点必须是字典")
         return self.parse(raw)
 
-    def parse(self, raw: Dict[str, Any]) -> AppConfig:
+    def parse(self, raw: dict[str, Any]) -> AppConfig:
         """
         解析已加载的 YAML 字典为 AppConfig
 
@@ -120,7 +124,7 @@ class ConfigLoader:
         if not isinstance(agents_raw, list):
             raise ConfigError("agents 必须是列表")
 
-        agent_specs: List[AgentSpec] = []
+        agent_specs: list[AgentSpec] = []
         agent_ids = set()
         for i, a in enumerate(agents_raw):
             spec = self._parse_agent(a, i)
@@ -134,13 +138,12 @@ class ConfigLoader:
         # 校验 session 引用的 agent 存在
         if session_agent and session_agent not in agent_ids:
             raise ConfigError(
-                f"session.agent '{session_agent}' 未在 agents 中声明，"
-                f"可用: {sorted(agent_ids)}"
+                f"session.agent '{session_agent}' 未在 agents 中声明，可用: {sorted(agent_ids)}"
             )
 
         # 解析 team 块（可选）：区分"无 team 键"与"team 为空字典"
         team_section = raw.get("team")
-        team_spec: Optional[TeamSpec] = None
+        team_spec: TeamSpec | None = None
         if team_section is not None:
             team_spec = self._parse_team(team_section, agent_ids)
 
@@ -153,7 +156,7 @@ class ConfigLoader:
             team=team_spec,
         )
 
-    def _parse_agent(self, raw: Dict[str, Any], index: int) -> AgentSpec:
+    def _parse_agent(self, raw: dict[str, Any], index: int) -> AgentSpec:
         """解析单个 agent 配置块"""
         if not isinstance(raw, dict):
             raise ConfigError(f"agents[{index}] 必须是字典")
@@ -171,8 +174,7 @@ class ConfigLoader:
         unknown = [t for t in tools if t not in available]
         if unknown:
             raise ConfigError(
-                f"agent '{agent_id}' 引用了未知工具 {unknown}，"
-                f"可用工具: {sorted(available)}"
+                f"agent '{agent_id}' 引用了未知工具 {unknown}，可用工具: {sorted(available)}"
             )
 
         return AgentSpec(
@@ -185,16 +187,14 @@ class ConfigLoader:
             max_steps=int(raw.get("max_steps", Agent.DEFAULT_MAX_STEPS)),
         )
 
-    def _parse_team(self, raw: Dict[str, Any], agent_ids: set) -> TeamSpec:
+    def _parse_team(self, raw: dict[str, Any], agent_ids: set) -> TeamSpec:
         """解析 team 配置块"""
         if not isinstance(raw, dict):
             raise ConfigError("team 必须是字典")
 
         process = str(raw.get("process", "sequential")).lower()
         if process not in ("sequential", "hierarchical"):
-            raise ConfigError(
-                f"team.process '{process}' 非法，可选: sequential / hierarchical"
-            )
+            raise ConfigError(f"team.process '{process}' 非法，可选: sequential / hierarchical")
 
         leader = raw.get("leader")
         if process == "hierarchical" and not leader:
@@ -223,7 +223,7 @@ class ConfigLoader:
     # ------------------------------------------------------------------
     # 构建运行时
     # ------------------------------------------------------------------
-    def build(self, config: AppConfig, llm_client: Optional[LLMClient] = None):
+    def build(self, config: AppConfig, llm_client: LLMClient | None = None):
         """
         由 AppConfig 构建运行时对象
 
@@ -238,7 +238,7 @@ class ConfigLoader:
         """
         llm = llm_client or GLMClient(model=config.model)
 
-        agents: Dict[str, Agent] = {}
+        agents: dict[str, Agent] = {}
         for spec in config.agents:
             agents[spec.id] = self._build_agent(spec, llm)
 
@@ -251,7 +251,7 @@ class ConfigLoader:
         )
         return llm, agents, session
 
-    def build_team(self, config: AppConfig, agents: Dict[str, Agent]) -> Optional["Team"]:
+    def build_team(self, config: AppConfig, agents: dict[str, Agent]) -> Any | None:
         """
         由配置构建 Team（若配置含 team 块）
 
@@ -266,7 +266,7 @@ class ConfigLoader:
             return None
 
         # 延迟导入，避免循环依赖（team.py 不依赖 config.py）
-        from .team import Team, SequentialProcess, HierarchicalProcess
+        from .team import HierarchicalProcess, SequentialProcess, Team
 
         spec = config.team
         members = [agents[mid] for mid in spec.members] if spec.members else list(agents.values())
@@ -318,6 +318,5 @@ class ConfigLoader:
             tool = self.tool_factory.create(tool_name)
             agent.tool_registry.register(tool)
 
-        logger.debug("构建 agent '%s'，工具=%s，能力=%s",
-                     spec.id, spec.tools, spec.capabilities)
+        logger.debug("构建 agent '%s'，工具=%s，能力=%s", spec.id, spec.tools, spec.capabilities)
         return agent

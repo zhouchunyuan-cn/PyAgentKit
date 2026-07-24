@@ -10,12 +10,13 @@
 - CapabilityCollaborationStrategy: 基于 required_capabilities 的通用策略
 - DynamicCollaborationManager: 任务分析 + 策略调度 + 消息路由
 """
-from typing import Dict, List, Any, Optional, Callable
+
+import logging
+from typing import Any
+
 from .agent import Agent
 from .message import Message
 from .router import Router
-import json
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class CollaborationStrategy:
         self.name = name
         self.description = description
 
-    def should_collaborate(self, task: Dict[str, Any], agents: List[Agent]) -> List[Agent]:
+    def should_collaborate(self, task: dict[str, Any], agents: list[Agent]) -> list[Agent]:
         """
         判断哪些 Agent 应该参与协作
 
@@ -43,7 +44,9 @@ class CollaborationStrategy:
         """
         raise NotImplementedError
 
-    def assign_roles(self, task: Dict[str, Any], collaborating_agents: List[Agent]) -> Dict[str, str]:
+    def assign_roles(
+        self, task: dict[str, Any], collaborating_agents: list[Agent]
+    ) -> dict[str, str]:
         """
         为协作 Agent 分配角色
 
@@ -56,7 +59,7 @@ class CollaborationStrategy:
         """
         raise NotImplementedError
 
-    def get_entry_agent(self, collaborating_agents: List[Agent]) -> Optional[Agent]:
+    def get_entry_agent(self, collaborating_agents: list[Agent]) -> Agent | None:
         """
         确定协作流程的入口 Agent（第一个接收任务消息的 Agent）
 
@@ -83,8 +86,8 @@ class CapabilityCollaborationStrategy(CollaborationStrategy):
         self,
         name: str,
         description: str,
-        required_capabilities: List[str],
-        entry_capability: Optional[str] = None,
+        required_capabilities: list[str],
+        entry_capability: str | None = None,
     ):
         """
         Args:
@@ -99,17 +102,21 @@ class CapabilityCollaborationStrategy(CollaborationStrategy):
         self.required_capabilities = required_capabilities
         self.entry_capability = entry_capability
 
-    def should_collaborate(self, task: Dict[str, Any], agents: List[Agent]) -> List[Agent]:
+    def should_collaborate(self, task: dict[str, Any], agents: list[Agent]) -> list[Agent]:
         """筛选声明了所需能力的 Agent（保留原始顺序）"""
         matched = [a for a in agents if a.has_any_capability(self.required_capabilities)]
         logger.debug(
             "策略 '%s' 匹配到 %d/%d 个 Agent: %s",
-            self.name, len(matched), len(agents),
+            self.name,
+            len(matched),
+            len(agents),
             [a.agent_id for a in matched],
         )
         return matched
 
-    def assign_roles(self, task: Dict[str, Any], collaborating_agents: List[Agent]) -> Dict[str, str]:
+    def assign_roles(
+        self, task: dict[str, Any], collaborating_agents: list[Agent]
+    ) -> dict[str, str]:
         """按 Agent 声明的能力分配角色（取第一个匹配能力作为角色名）"""
         roles = {}
         for agent in collaborating_agents:
@@ -119,7 +126,7 @@ class CapabilityCollaborationStrategy(CollaborationStrategy):
                     break
         return roles
 
-    def get_entry_agent(self, collaborating_agents: List[Agent]) -> Optional[Agent]:
+    def get_entry_agent(self, collaborating_agents: list[Agent]) -> Agent | None:
         """优先选具备入口能力的 Agent 作为流程起点"""
         if self.entry_capability:
             for a in collaborating_agents:
@@ -131,6 +138,7 @@ class CapabilityCollaborationStrategy(CollaborationStrategy):
 # --------------------------------------------------------------------
 # 向后兼容：保留旧的策略类名，但内部改为基于能力匹配
 # --------------------------------------------------------------------
+
 
 class ResearchCollaborationStrategy(CapabilityCollaborationStrategy):
     """研究任务协作策略（需要 search + write 能力，search 为入口）"""
@@ -166,8 +174,8 @@ class DynamicCollaborationManager:
 
     def __init__(self, router: Router):
         self.router = router
-        self.strategies: Dict[str, CollaborationStrategy] = {}
-        self.task_history: List[Dict[str, Any]] = []
+        self.strategies: dict[str, CollaborationStrategy] = {}
+        self.task_history: list[dict[str, Any]] = []
 
         # 注册默认的协作策略
         self.register_strategy(ResearchCollaborationStrategy())
@@ -177,7 +185,7 @@ class DynamicCollaborationManager:
         """注册协作策略"""
         self.strategies[strategy.name] = strategy
 
-    def get_strategy(self, strategy_name: str) -> Optional[CollaborationStrategy]:
+    def get_strategy(self, strategy_name: str) -> CollaborationStrategy | None:
         """获取协作策略"""
         return self.strategies.get(strategy_name)
 
@@ -228,9 +236,11 @@ class DynamicCollaborationManager:
         )
 
         if not collaborating_agents:
-            logger.warning("没有找到具备所需能力的 Agent（任务类型 '%s'，需要能力 %s）",
-                           task_type,
-                           getattr(strategy, 'required_capabilities', []))
+            logger.warning(
+                "没有找到具备所需能力的 Agent（任务类型 '%s'，需要能力 %s）",
+                task_type,
+                getattr(strategy, "required_capabilities", []),
+            )
             return False
 
         # 4. 分配角色
@@ -263,15 +273,20 @@ class DynamicCollaborationManager:
             msg_type=msg_type,
         )
         self.router.route_message(message)
-        logger.info("协作已启动：任务类型=%s，入口=%s，参与=%s",
-                    task_type, entry_agent.agent_id,
-                    [a.agent_id for a in collaborating_agents])
+        logger.info(
+            "协作已启动：任务类型=%s，入口=%s，参与=%s",
+            task_type,
+            entry_agent.agent_id,
+            [a.agent_id for a in collaborating_agents],
+        )
         return True
 
-    def get_collaboration_stats(self) -> Dict[str, Any]:
+    def get_collaboration_stats(self) -> dict[str, Any]:
         """获取协作统计信息"""
         return {
             "strategy_count": len(self.strategies),
             "task_history_count": len(self.task_history),
-            "recent_tasks": self.task_history[-5:] if len(self.task_history) > 5 else self.task_history
+            "recent_tasks": self.task_history[-5:]
+            if len(self.task_history) > 5
+            else self.task_history,
         }

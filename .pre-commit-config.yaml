@@ -1,0 +1,16 @@
+# Pre-commit hooks 配置
+#
+# 首次使用：
+#   pip install pre-commit
+#   pre-commit install
+# 之后每次 git commit 会自动运行 ruff 检查与格式化。
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(core|cli|agents)/.*\.py$
+      - id: ruff-format
+        files: ^(core|cli|agents)/.*\.py$

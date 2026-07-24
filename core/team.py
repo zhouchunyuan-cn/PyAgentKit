@@ -20,14 +20,13 @@
     result = team.run("写一篇关于量子计算的科普文章")
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 import json
 import logging
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
 
 from .agent import Agent
-from .llm import LLMClient
 from .trace import Tracer
 
 logger = logging.getLogger(__name__)
@@ -45,18 +44,18 @@ class SharedContext:
     def __init__(self, task: str = ""):
         self.task: str = task
         # 各成员的产出：agent_id -> output
-        self.outputs: Dict[str, str] = {}
+        self.outputs: dict[str, str] = {}
         # 任意中间产物（子任务、规划、统计等）
-        self.intermediate: Dict[str, Any] = {}
+        self.intermediate: dict[str, Any] = {}
         # 执行步骤记录，便于追溯
-        self.history: List[Dict[str, Any]] = []
+        self.history: list[dict[str, Any]] = []
 
     def add_output(self, agent_id: str, output: str) -> None:
         """记录某成员的产出"""
         self.outputs[agent_id] = output
         self.history.append({"agent": agent_id, "action": "output", "detail": output[:200]})
 
-    def get_output(self, agent_id: str) -> Optional[str]:
+    def get_output(self, agent_id: str) -> str | None:
         """获取某成员的产出"""
         return self.outputs.get(agent_id)
 
@@ -86,7 +85,7 @@ class SharedContext:
         """记录一个执行步骤（便于调试/展示）"""
         self.history.append({"step": step, "detail": detail})
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         """上下文摘要"""
         return {
             "task": self.task,
@@ -106,6 +105,7 @@ class Task:
         description: 任务描述（团队共同目标）
         context: 执行期间创建的共享上下文
     """
+
     description: str
     context: SharedContext = field(default_factory=SharedContext)
 
@@ -122,8 +122,8 @@ class Process(ABC):
     def execute(
         self,
         task: Task,
-        members: List[Agent],
-        leader: Optional[Agent] = None,
+        members: list[Agent],
+        leader: Agent | None = None,
     ) -> str:
         """
         执行团队任务
@@ -154,7 +154,7 @@ class SequentialProcess(Process):
 
     name = "sequential"
 
-    def execute(self, task: Task, members: List[Agent], leader: Optional[Agent] = None) -> str:
+    def execute(self, task: Task, members: list[Agent], leader: Agent | None = None) -> str:
         if not members:
             raise ValueError("SequentialProcess 需要至少一个成员")
 
@@ -169,7 +169,9 @@ class SequentialProcess(Process):
             user_input = self._build_input(task.description, prior, is_first=(idx == 0))
 
             logger.info("[Sequential] 成员 %s (%d/%d) 开始处理", member.name, idx + 1, len(members))
-            span = Tracer.start_span(f"sequential:{member.agent_id}", member=member.agent_id, step=idx + 1)
+            span = Tracer.start_span(
+                f"sequential:{member.agent_id}", member=member.agent_id, step=idx + 1
+            )
             output = member.think(user_input)
             Tracer.end_span(span)
             ctx.add_output(member.agent_id, output)
@@ -194,8 +196,7 @@ class SequentialProcess(Process):
     def _ensure_can_think(agent: Agent) -> None:
         if agent.llm is None:
             raise RuntimeError(
-                f"成员 '{agent.name}' 未配置 LLM，无法执行 think()。"
-                "请为团队成员传入 llm_client。"
+                f"成员 '{agent.name}' 未配置 LLM，无法执行 think()。请为团队成员传入 llm_client。"
             )
 
 
@@ -243,7 +244,7 @@ class HierarchicalProcess(Process):
         self.max_subtasks = max_subtasks
         self.max_steps = max_steps
 
-    def execute(self, task: Task, members: List[Agent], leader: Optional[Agent] = None) -> str:
+    def execute(self, task: Task, members: list[Agent], leader: Agent | None = None) -> str:
         if leader is None:
             raise ValueError("HierarchicalProcess 需要 leader")
         self._ensure_can_think(leader)
@@ -272,17 +273,16 @@ class HierarchicalProcess(Process):
 
             self._ensure_can_think(member)
             prior = ctx.get_all_outputs()
-            user_input = (
-                f"子任务：{st['subtask']}\n"
-                f"（团队整体目标：{task.description}）"
-                + (f"\n\n此前产出：\n{prior}" if prior else "")
+            user_input = f"子任务：{st['subtask']}\n（团队整体目标：{task.description}）" + (
+                f"\n\n此前产出：\n{prior}" if prior else ""
             )
 
-            logger.info("[Hierarchical] 子任务交给 %s（能力 %s）",
-                        member.name, st["capability"])
+            logger.info("[Hierarchical] 子任务交给 %s（能力 %s）", member.name, st["capability"])
             span = Tracer.start_span(
                 f"hierarchical:{member.agent_id}",
-                member=member.agent_id, subtask=st["subtask"][:40], capability=st["capability"],
+                member=member.agent_id,
+                subtask=st["subtask"][:40],
+                capability=st["capability"],
             )
             output = member.think(user_input)
             Tracer.end_span(span)
@@ -312,10 +312,10 @@ class HierarchicalProcess(Process):
     def _plan(
         self,
         task_desc: str,
-        members: List[Agent],
+        members: list[Agent],
         leader: Agent,
         ctx: SharedContext,
-    ) -> List[Dict[str, str]]:
+    ) -> list[dict[str, str]]:
         """
         让 Leader 规划子任务
 
@@ -341,7 +341,7 @@ class HierarchicalProcess(Process):
         # 回退：每个成员一个子任务（用其第一个能力）
         return self._fallback_plan(members)
 
-    def _parse_plan(self, raw: str, members: List[Agent]) -> List[Dict[str, str]]:
+    def _parse_plan(self, raw: str, members: list[Agent]) -> list[dict[str, str]]:
         """
         解析 Leader 输出的 JSON 子任务规划
 
@@ -358,7 +358,6 @@ class HierarchicalProcess(Process):
         except json.JSONDecodeError:
             return []
 
-        valid_caps = {c for m in members for c in m.capabilities}
         result = []
         for item in data:
             if not isinstance(item, dict):
@@ -370,20 +369,22 @@ class HierarchicalProcess(Process):
         return result
 
     @staticmethod
-    def _fallback_plan(members: List[Agent]) -> List[Dict[str, str]]:
+    def _fallback_plan(members: list[Agent]) -> list[dict[str, str]]:
         """回退规划：每个有能力的成员处理一个通用子任务"""
         plan = []
         for m in members:
             if not m.capabilities:
                 continue
-            plan.append({
-                "subtask": f"请用你的专长推进团队任务",
-                "capability": m.capabilities[0],
-            })
+            plan.append(
+                {
+                    "subtask": "请用你的专长推进团队任务",
+                    "capability": m.capabilities[0],
+                }
+            )
         return plan
 
     @staticmethod
-    def _find_member_by_capability(members: List[Agent], capability: str) -> Optional[Agent]:
+    def _find_member_by_capability(members: list[Agent], capability: str) -> Agent | None:
         """按能力找成员（返回第一个具备该能力的）"""
         for m in members:
             if m.has_capability(capability):
@@ -410,9 +411,9 @@ class Team:
     def __init__(
         self,
         name: str,
-        members: Optional[List[Agent]] = None,
-        process: Optional[Process] = None,
-        leader: Optional[Agent] = None,
+        members: list[Agent] | None = None,
+        process: Process | None = None,
+        leader: Agent | None = None,
     ):
         """
         Args:
@@ -422,11 +423,11 @@ class Team:
             leader: 团队领导；HierarchicalProcess 时必需
         """
         self.name = name
-        self.members: List[Agent] = list(members) if members else []
+        self.members: list[Agent] = list(members) if members else []
         self.process: Process = process or SequentialProcess()
-        self.leader: Optional[Agent] = leader
+        self.leader: Agent | None = leader
         # 历次任务记录（便于 summary / 调试）
-        self.task_history: List[Dict[str, Any]] = []
+        self.task_history: list[dict[str, Any]] = []
 
     def add_member(self, agent: Agent) -> None:
         """添加成员"""
@@ -458,8 +459,12 @@ class Team:
 
         task = Task(description=task_description, context=SharedContext(task=task_description))
 
-        logger.info("[Team:%s] 启动任务（流程=%s，成员=%d）",
-                    self.name, self.process.name, len(self.members))
+        logger.info(
+            "[Team:%s] 启动任务（流程=%s，成员=%d）",
+            self.name,
+            self.process.name,
+            len(self.members),
+        )
 
         # 若 tracer 已启用，自动开启一个 trace 覆盖整个团队任务
         _started_trace = None
@@ -472,19 +477,24 @@ class Team:
             if _started_trace is not None:
                 Tracer.end_trace()
 
-        self.task_history.append({
-            "task": task_description,
-            "process": self.process.name,
-            "context_summary": task.context.summary(),
-        })
+        self.task_history.append(
+            {
+                "task": task_description,
+                "process": self.process.name,
+                "context_summary": task.context.summary(),
+            }
+        )
         return result
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         """团队摘要"""
         return {
             "name": self.name,
             "member_count": len(self.members),
-            "members": [{"id": m.agent_id, "name": m.name, "capabilities": m.capabilities} for m in self.members],
+            "members": [
+                {"id": m.agent_id, "name": m.name, "capabilities": m.capabilities}
+                for m in self.members
+            ],
             "process": self.process.name,
             "has_leader": self.leader is not None,
             "task_count": len(self.task_history),

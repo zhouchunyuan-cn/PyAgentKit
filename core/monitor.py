@@ -6,11 +6,11 @@
 注意：时序追踪请用 core/trace.py（Tracer），本模块提供的是状态快照。
 """
 
-from typing import Dict, List, Any, Optional
-from .router import Router
-from .agent import Agent
 import json
 import logging
+from typing import Any
+
+from .router import Router
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +24,12 @@ class AgentMonitor:
     def __init__(self, router: Router):
         """
         初始化监控系统
-        
+
         Args:
             router: 路由器实例
         """
         self.router = router
-        self.monitoring_data: Dict[str, List[Dict[str, Any]]] = {}
+        self.monitoring_data: dict[str, list[dict[str, Any]]] = {}
         self.is_monitoring = False
 
     def start_monitoring(self) -> None:
@@ -46,64 +46,64 @@ class AgentMonitor:
         self.is_monitoring = False
         print("Agent监控系统已停止")
 
-    def get_agent_status(self, agent_id: str) -> Optional[Dict[str, Any]]:
+    def get_agent_status(self, agent_id: str) -> dict[str, Any] | None:
         """
         获取指定Agent的状态信息
-        
+
         Args:
             agent_id: Agent ID
-            
+
         Returns:
             Agent状态信息
         """
         agent = self.router.get_agent(agent_id)
         if not agent:
             return None
-            
+
         return {
             "agent_id": agent.agent_id,
             "name": agent.name,
             "system_prompt": agent.system_prompt,
             "tool_count": len(agent.tools),
             "memory_stats": agent.memory.get_memory_stats() if agent.memory else {},
-            "tools": agent.list_tools()
+            "tools": agent.list_tools(),
         }
 
-    def get_system_overview(self) -> Dict[str, Any]:
+    def get_system_overview(self) -> dict[str, Any]:
         """
         获取系统概览
-        
+
         Returns:
             系统概览信息
         """
         router_stats = self.router.get_router_stats()
         agent_statuses = {}
-        
+
         for agent_id in self.router.list_agents():
             agent_statuses[agent_id] = self.get_agent_status(agent_id)
-            
+
         return {
             "router_stats": router_stats,
             "agent_statuses": agent_statuses,
-            "monitoring_active": self.is_monitoring
+            "monitoring_active": self.is_monitoring,
         }
 
     def export_monitoring_report(self, filepath: str) -> bool:
         """
         导出监控报告
-        
+
         Args:
             filepath: 导出文件路径
-            
+
         Returns:
             是否导出成功
         """
         try:
             report_data = self.get_system_overview()
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
+
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(report_data, f, ensure_ascii=False, indent=2)
-            
+
             return True
         except Exception as e:
             logger.error("导出监控报告失败: %s", e)
@@ -116,9 +116,9 @@ class AgentMonitor:
         if not self.is_monitoring:
             print("监控未启动，请先调用start_monitoring()")
             return
-            
+
         overview = self.get_system_overview()
-        
+
         print("\n=== Agent系统实时状态 ===")
         print(f"注册Agent数量: {overview['router_stats']['agent_count']}")
         print(f"消息历史数量: {overview['router_stats']['message_history_count']}")
@@ -126,9 +126,9 @@ class AgentMonitor:
         print(f"发送消息数: {overview['router_stats']['stats']['messages_sent']}")
         print(f"接收消息数: {overview['router_stats']['stats']['messages_received']}")
         print(f"路由错误数: {overview['router_stats']['stats']['routing_errors']}")
-        
+
         print("\n--- Agent详情 ---")
-        for agent_id, status in overview['agent_statuses'].items():
+        for agent_id, status in overview["agent_statuses"].items():
             print(f"\nAgent ID: {agent_id}")
             print(f"  名称: {status['name']}")
             print(f"  工具数量: {status['tool_count']}")

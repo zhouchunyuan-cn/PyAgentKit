@@ -5,11 +5,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pyagentkit"
 version = "0.3.0"
-description = "轻量级、可扩展的多智能体框架，基于智谱 GLM，支持 ReAct、向量记忆、声明式编排"
+description = "轻量级、可扩展的多智能体框架，基于智谱 GLM，支持 ReAct、团队协作、异步路由与声明式编排"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "zhouchunyuan" }]
+keywords = [
+    "agent",
+    "multi-agent",
+    "llm",
+    "glm",
+    "zhipuai",
+    "react",
+    "ai",
+    "framework",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "zhipuai>=2.1.0",
     "requests>=2.28.0",
@@ -22,7 +44,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "ruff>=0.4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zhouchunyuan-cn/PyAgentKit"
+Repository = "https://github.com/zhouchunyuan-cn/PyAgentKit"
+Documentation = "https://github.com/zhouchunyuan-cn/PyAgentKit/tree/main/docs"
+Issues = "https://github.com/zhouchunyuan-cn/PyAgentKit/issues"
+Changelog = "https://github.com/zhouchunyuan-cn/PyAgentKit/releases"
 
 [project.scripts]
 # 安装后可全局使用：pyagentkit chat / ask / run / tools
@@ -34,4 +64,40 @@ py-modules = ["cli", "agents", "main"]
 
 [tool.setuptools.packages.find]
 include = ["core*"]
-exclude = ["tests*", "configs*"]
+exclude = ["tests*", "configs*", "docs*"]
+
+# ------------------------------------------------------------------
+# 代码质量工具配置
+# ------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# 启用常用规则集：错误、警告、命名、导入排序、简化
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+# 忽略部分与项目风格冲突的规则
+ignore = [
+    "E501",   # 行长由 formatter 管，这里不强制
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]   # 测试文件放宽行长
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+# ------------------------------------------------------------------
+# mypy 配置（可选启用，当前为宽松模式，不阻断 CI）
+# ------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true

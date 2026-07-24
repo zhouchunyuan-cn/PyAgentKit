@@ -10,10 +10,11 @@
 - 历史按 token/条数限制滑动窗口，避免上下文爆炸
 - 历史以 OpenAI messages 格式存储，可直接喂给 Agent.think(context_messages=...)
 """
-from typing import Any, Dict, List, Optional
-import uuid
-import time
+
 import logging
+import time
+import uuid
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,9 @@ class ConversationSession:
     def __init__(
         self,
         agent,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         max_history: int = 10,
-        system_context: Optional[str] = None,
+        system_context: str | None = None,
     ):
         """
         Args:
@@ -49,7 +50,7 @@ class ConversationSession:
         self.system_context = system_context
 
         # 对话历史，OpenAI messages 风格：[{"role","content"}, ...]
-        self.history: List[Dict[str, str]] = []
+        self.history: list[dict[str, str]] = []
         # 创建时间，便于会话管理
         self.created_at = time.time()
 
@@ -86,9 +87,9 @@ class ConversationSession:
 
         return response
 
-    def _build_context_messages(self) -> List[Dict[str, str]]:
+    def _build_context_messages(self) -> list[dict[str, str]]:
         """组装注入 think 的上下文消息（系统上下文 + 历史）"""
-        messages: List[Dict[str, str]] = []
+        messages: list[dict[str, str]] = []
         if self.system_context:
             messages.append({"role": "system", "content": self.system_context})
         # 复制历史，避免被 think 内部修改影响
@@ -109,7 +110,7 @@ class ConversationSession:
     # ------------------------------------------------------------------
     # 会话管理
     # ------------------------------------------------------------------
-    def get_history(self) -> List[Dict[str, str]]:
+    def get_history(self) -> list[dict[str, str]]:
         """返回对话历史的副本"""
         return [m.copy() for m in self.history]
 
@@ -117,7 +118,7 @@ class ConversationSession:
         """清空对话历史（开启全新话题）"""
         self.history.clear()
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         """返回会话摘要信息"""
         return {
             "session_id": self.session_id,
@@ -137,7 +138,7 @@ class SessionManager:
     """
 
     def __init__(self):
-        self._sessions: Dict[str, ConversationSession] = {}
+        self._sessions: dict[str, ConversationSession] = {}
 
     def create_session(self, agent, **kwargs) -> ConversationSession:
         """创建并登记一个新会话"""
@@ -145,7 +146,7 @@ class SessionManager:
         self._sessions[session.session_id] = session
         return session
 
-    def get_session(self, session_id: str) -> Optional[ConversationSession]:
+    def get_session(self, session_id: str) -> ConversationSession | None:
         """按 ID 获取会话"""
         return self._sessions.get(session_id)
 
@@ -156,6 +157,6 @@ class SessionManager:
             return True
         return False
 
-    def list_sessions(self) -> List[str]:
+    def list_sessions(self) -> list[str]:
         """列出所有会话 ID"""
         return list(self._sessions.keys())

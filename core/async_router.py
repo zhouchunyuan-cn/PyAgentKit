@@ -26,9 +26,9 @@
 - 与现有 Router 接口平行，可作为可选替代。
 """
 
-from typing import Dict, List, Optional, Any
 import asyncio
 import logging
+from typing import Any
 
 from .agent import Agent
 from .message import Message
@@ -51,20 +51,20 @@ class AsyncRouter:
                             完全无递归）。>1 可并发处理不同消息，但同一
                             消息链仍按队列出队顺序调度。
         """
-        self.agents: Dict[str, Agent] = {}
-        self.message_history: List[Message] = []
-        self.stats: Dict[str, int] = {
+        self.agents: dict[str, Agent] = {}
+        self.message_history: list[Message] = []
+        self.stats: dict[str, int] = {
             "messages_sent": 0,
             "messages_received": 0,
             "routing_errors": 0,
         }
         self._max_concurrent = max_concurrent
         # 队列与消费任务在 start() 中创建（需要事件循环）
-        self._queue: Optional[asyncio.Queue] = None
-        self._consumer_tasks: List[asyncio.Task] = []
+        self._queue: asyncio.Queue | None = None
+        self._consumer_tasks: list[asyncio.Task] = []
         self._running = False
         # drain 的等待条件：队列空且无在处理消息时通知
-        self._idle_event: Optional[asyncio.Event] = None
+        self._idle_event: asyncio.Event | None = None
         self._in_flight = 0
 
     # ------------------------------------------------------------------
@@ -80,13 +80,13 @@ class AsyncRouter:
             self.agents[agent_id].router = None
             del self.agents[agent_id]
 
-    def get_agent(self, agent_id: str) -> Optional[Agent]:
+    def get_agent(self, agent_id: str) -> Agent | None:
         return self.agents.get(agent_id)
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         return list(self.agents.keys())
 
-    def get_router_stats(self) -> Dict[str, Any]:
+    def get_router_stats(self) -> dict[str, Any]:
         return {
             "agent_count": len(self.agents),
             "message_history_count": len(self.message_history),
@@ -106,8 +106,7 @@ class AsyncRouter:
         self._idle_event.set()  # 初始无消息，视为空闲
         self._running = True
         self._consumer_tasks = [
-            asyncio.create_task(self._consumer_loop())
-            for _ in range(self._max_concurrent)
+            asyncio.create_task(self._consumer_loop()) for _ in range(self._max_concurrent)
         ]
         logger.debug("AsyncRouter 已启动，消费协程数=%d", self._max_concurrent)
 
@@ -118,11 +117,11 @@ class AsyncRouter:
             await self._queue.join()  # 等待所有已入队消息处理完
         for task in self._consumer_tasks:
             task.cancel()
+        import contextlib
+
         for task in self._consumer_tasks:
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         self._consumer_tasks.clear()
         logger.debug("AsyncRouter 已停止")
 
@@ -186,7 +185,7 @@ class AsyncRouter:
         self,
         message: Message,
         exclude_sender: bool = True,
-        target_agents: Optional[List[str]] = None,
+        target_agents: list[str] | None = None,
     ) -> None:
         """异步广播：把消息分发给目标 Agent（每个作为独立消息入队）"""
         if target_agents is None:
@@ -197,13 +196,15 @@ class AsyncRouter:
             if agent_id not in self.agents:
                 self.stats["routing_errors"] += 1
                 continue
-            await self.route(Message(
-                sender=message.sender,
-                receiver=agent_id,
-                content=message.content,
-                msg_type=message.type,
-                metadata=message.metadata.copy(),
-            ))
+            await self.route(
+                Message(
+                    sender=message.sender,
+                    receiver=agent_id,
+                    content=message.content,
+                    msg_type=message.type,
+                    metadata=message.metadata.copy(),
+                )
+            )
 
     # ------------------------------------------------------------------
     # 消费循环（后台协程）
@@ -224,9 +225,8 @@ class AsyncRouter:
             finally:
                 self._in_flight -= 1
                 self._queue.task_done()
-                if self._in_flight == 0 and self._queue.empty():
-                    if self._idle_event is not None:
-                        self._idle_event.set()
+                if self._in_flight == 0 and self._queue.empty() and self._idle_event is not None:
+                    self._idle_event.set()
 
     async def _deliver(self, message: Message) -> None:
         """把单条消息投递给目标 Agent（异步，异常边界保护）"""

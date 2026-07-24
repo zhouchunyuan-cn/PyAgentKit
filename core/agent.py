@@ -5,16 +5,17 @@ Agent 智能体基类
 以及核心的 think() ReAct 推理循环（思考→调工具→观察→再思考）。
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, TYPE_CHECKING, List, Callable
 import json
 import logging
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
-from .message import Message
+from .llm import ChatResult, LLMClient, TokenUsage
 from .memory import Memory
 from .memory_manager import MemoryManager
+from .message import Message
 from .tools import ToolRegistry
-from .llm import LLMClient, TokenUsage, ChatResult
 from .trace import Tracer
 
 if TYPE_CHECKING:
@@ -42,12 +43,12 @@ class Agent(ABC):
         self,
         agent_id: str,
         name: str,
-        system_prompt: Optional[str] = None,
-        llm_client: Optional[LLMClient] = None,
+        system_prompt: str | None = None,
+        llm_client: LLMClient | None = None,
         model: str = "glm-4-flash",
         max_steps: int = DEFAULT_MAX_STEPS,
-        capabilities: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
+        capabilities: list[str] | None = None,
+        tags: list[str] | None = None,
     ):
         """
         初始化Agent
@@ -66,12 +67,12 @@ class Agent(ABC):
         self.agent_id = agent_id
         self.name = name
         self.system_prompt = system_prompt
-        self.llm: Optional[LLMClient] = llm_client
+        self.llm: LLMClient | None = llm_client
         self.model = model
         self.max_steps = max_steps
         # 能力声明：协作系统据此匹配 Agent，而非依赖硬编码 name
-        self.capabilities: List[str] = list(capabilities) if capabilities else []
-        self.tags: List[str] = list(tags) if tags else []
+        self.capabilities: list[str] = list(capabilities) if capabilities else []
+        self.tags: list[str] = list(tags) if tags else []
         self.memory = Memory()
         # 向量记忆（语义召回），可选注入；默认 None
         self.vector_memory = None
@@ -80,11 +81,11 @@ class Agent(ABC):
         self.brain = MemoryManager(memory=self.memory, vector_memory=self.vector_memory)
         # token 用量累计（每次 think 累加）
         self._token_usage = TokenUsage()
-        self.router: Optional['Router'] = None
+        self.router: Router | None = None
         # 统一使用 ToolRegistry 管理 LLM 可调用的工具
         self.tool_registry = ToolRegistry()
         # 保留旧字段以兼容外部访问
-        self.tools: Dict[str, Any] = self.tool_registry.tools
+        self.tools: dict[str, Any] = self.tool_registry.tools
 
     def has_capability(self, capability: str) -> bool:
         """
@@ -98,7 +99,7 @@ class Agent(ABC):
         """
         return capability in self.capabilities
 
-    def has_any_capability(self, capabilities: List[str]) -> bool:
+    def has_any_capability(self, capabilities: list[str]) -> bool:
         """
         判断 Agent 是否具备给定能力中的任意一项
 
@@ -110,7 +111,7 @@ class Agent(ABC):
         """
         return any(c in self.capabilities for c in capabilities)
 
-    def set_router(self, router: 'Router') -> None:
+    def set_router(self, router: "Router") -> None:
         """
         设置路由器
 
@@ -150,9 +151,9 @@ class Agent(ABC):
     def think(
         self,
         user_input: str,
-        context_messages: Optional[List[Dict[str, Any]]] = None,
+        context_messages: list[dict[str, Any]] | None = None,
         use_tools: bool = True,
-        stream_callback: Optional[Callable[[str], None]] = None,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> str:
         """
         ReAct 推理主循环
@@ -182,13 +183,19 @@ class Agent(ABC):
             )
 
         # 1. 组装初始消息列表
-        messages: List[Dict[str, Any]] = self._build_initial_messages(user_input, context_messages)
+        messages: list[dict[str, Any]] = self._build_initial_messages(user_input, context_messages)
 
         # 工具 schema（仅在启用工具且有工具时提供）
-        tools = self.tool_registry.to_openai_tools() if (use_tools and self.tool_registry.tools) else None
+        tools = (
+            self.tool_registry.to_openai_tools()
+            if (use_tools and self.tool_registry.tools)
+            else None
+        )
 
         # trace 插桩（未启用时零开销）
-        _span = Tracer.start_span(f"think:{self.name}", agent=self.agent_id, input_preview=user_input[:50])
+        _span = Tracer.start_span(
+            f"think:{self.name}", agent=self.agent_id, input_preview=user_input[:50]
+        )
 
         # 2. ReAct 循环
         for step in range(self.max_steps):
@@ -212,29 +219,36 @@ class Agent(ABC):
                 return final_text
 
             # 把助手的工具调用请求加入对话历史
-            messages.append({
-                "role": "assistant",
-                "content": result.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
-                    }
-                    for tc in result.tool_calls
-                ],
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": result.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                            },
+                        }
+                        for tc in result.tool_calls
+                    ],
+                }
+            )
 
             # 逐个执行工具，把结果作为 tool 消息回传
             for tc in result.tool_calls:
                 tool_result = self._execute_tool_safe(tc.name, tc.arguments)
                 # 工具结果存入短期记忆，便于后续步骤引用
                 self.remember(f"tool:{tc.name}:{tc.id}", tool_result, memory_type="short")
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(tool_result, ensure_ascii=False),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    }
+                )
 
         # 超过最大步数仍未结束，做一次不带工具的收尾调用以获取最终答复
         logger.warning("[%s] 达到最大步数 %d，进行收尾调用", self.name, self.max_steps)
@@ -251,10 +265,10 @@ class Agent(ABC):
 
     def _stream_final_answer(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         tools,
         stream_callback: Callable[[str], None],
-        base: Optional[ChatResult] = None,
+        base: ChatResult | None = None,
     ) -> str:
         """
         流式产出最终答复，实时回调文本片段
@@ -268,7 +282,7 @@ class Agent(ABC):
         Returns:
             完整的最终答复文本
         """
-        collected: List[str] = []
+        collected: list[str] = []
         try:
             for chunk in self.llm.chat_stream(
                 messages, tools=tools, tool_choice="auto" if tools else "none"
@@ -293,8 +307,8 @@ class Agent(ABC):
     def _build_initial_messages(
         self,
         user_input: str,
-        context_messages: Optional[List[Dict[str, Any]]] = None,
-    ) -> List[Dict[str, Any]]:
+        context_messages: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         组装初始对话消息（委托给统一记忆管理器）
 
@@ -314,7 +328,7 @@ class Agent(ABC):
             extra_context=context_messages,
         )
 
-    def _execute_tool_safe(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    def _execute_tool_safe(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """
         安全执行工具调用，捕获异常避免中断循环
 
@@ -356,7 +370,9 @@ class Agent(ABC):
     # 通信（保留原有接口）
     # ------------------------------------------------------------------
 
-    def send(self, receiver_id: str, content: Any, msg_type: str = "text", metadata: Optional[Dict] = None) -> None:
+    def send(
+        self, receiver_id: str, content: Any, msg_type: str = "text", metadata: dict | None = None
+    ) -> None:
         """
         发送消息给其他Agent
 
@@ -371,7 +387,7 @@ class Agent(ABC):
             receiver=receiver_id,
             content=content,
             msg_type=msg_type,
-            metadata=metadata
+            metadata=metadata,
         )
 
         # 如果设置了路由器，则自动路由消息
@@ -381,7 +397,9 @@ class Agent(ABC):
             # 否则返回消息对象以便手动路由
             return message
 
-    async def async_send(self, receiver_id: str, content: Any, msg_type: str = "text", metadata: Optional[Dict] = None) -> None:
+    async def async_send(
+        self, receiver_id: str, content: Any, msg_type: str = "text", metadata: dict | None = None
+    ) -> None:
         """
         异步发送消息（AsyncRouter 场景使用）
 
@@ -408,7 +426,7 @@ class Agent(ABC):
             # 无异步路由器，回退同步发送
             self.send(receiver_id, content, msg_type, metadata)
 
-    def broadcast(self, content: Any, msg_type: str = "text", metadata: Optional[Dict] = None) -> None:
+    def broadcast(self, content: Any, msg_type: str = "text", metadata: dict | None = None) -> None:
         """
         广播消息给所有Agent
 
@@ -423,7 +441,7 @@ class Agent(ABC):
                 receiver="all",  # 特殊接收者表示广播
                 content=content,
                 msg_type=msg_type,
-                metadata=metadata
+                metadata=metadata,
             )
             self.router.broadcast(message)
         else:
@@ -457,7 +475,7 @@ class Agent(ABC):
         """
         return self.tools.get(name)
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         """
         列出所有可用工具
 
@@ -514,5 +532,6 @@ class Agent(ABC):
         子类可覆盖为真正的 async 实现，以获得并发收益。
         """
         import asyncio
+
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.receive, message)

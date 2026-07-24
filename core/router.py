@@ -6,11 +6,13 @@
 异步场景请用 core/async_router.py（AsyncRouter）。
 """
 
-from typing import Dict, List, Callable, Optional, Union, Set, Any
-from .agent import Agent
-from .message import Message
 import json
 import logging
+from collections.abc import Callable
+from typing import Any
+
+from .agent import Agent
+from .message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 class Router:
     """
     PyAgentKit中的消息路由器
-    
+
     功能:
     - 点对点路由
     - 广播路由
@@ -29,19 +31,19 @@ class Router:
         """
         初始化路由器
         """
-        self.agents: Dict[str, Agent] = {}
-        self.routing_rules: List[Callable[[Message], Optional[str]]] = []
-        self.message_history: List[Message] = []
-        self.stats: Dict[str, int] = {
+        self.agents: dict[str, Agent] = {}
+        self.routing_rules: list[Callable[[Message], str | None]] = []
+        self.message_history: list[Message] = []
+        self.stats: dict[str, int] = {
             "messages_sent": 0,
             "messages_received": 0,
-            "routing_errors": 0
+            "routing_errors": 0,
         }
 
     def register_agent(self, agent: Agent) -> None:
         """
         注册Agent到路由器
-        
+
         Args:
             agent: 要注册的Agent实例
         """
@@ -52,7 +54,7 @@ class Router:
     def unregister_agent(self, agent_id: str) -> None:
         """
         从路由器注销Agent
-        
+
         Args:
             agent_id: 要注销的Agent ID
         """
@@ -64,15 +66,15 @@ class Router:
     def route_message(self, message: Message) -> bool:
         """
         路由消息到指定的接收者
-        
+
         Args:
             message: 要路由的消息
-            
+
         Returns:
             是否成功路由
         """
         receiver_id = message.receiver
-        
+
         # 检查是否有特定的路由规则
         for rule in self.routing_rules:
             target_agent_id = rule(message)
@@ -80,11 +82,11 @@ class Router:
                 receiver_id = target_agent_id
                 message.receiver = receiver_id
                 break
-                
+
         # 添加到消息历史
         self.message_history.append(message)
         self.stats["messages_sent"] += 1
-        
+
         # 路由消息
         if receiver_id in self.agents:
             try:
@@ -101,34 +103,35 @@ class Router:
             self.stats["routing_errors"] += 1
             return False
 
-    def broadcast(self, message: Message, exclude_sender: bool = True, 
-                  target_agents: Optional[Set[str]] = None) -> Dict[str, bool]:
+    def broadcast(
+        self, message: Message, exclude_sender: bool = True, target_agents: set[str] | None = None
+    ) -> dict[str, bool]:
         """
         广播消息给所有Agent
-        
+
         Args:
             message: 要广播的消息
             exclude_sender: 是否排除发送者
             target_agents: 指定要广播的目标Agents，如果为None则广播给所有agents
-            
+
         Returns:
             广播结果字典，键为agent_id，值为是否成功发送
         """
         # 添加到消息历史
         self.message_history.append(message)
-        
+
         results = {}
-        
+
         # 确定目标agents
         if target_agents is None:
             target_agents = set(self.agents.keys())
-        
+
         for agent_id in target_agents:
             # 检查是否排除发送者
             if exclude_sender and agent_id == message.sender:
                 results[agent_id] = False
                 continue
-                
+
             # 检查agent是否存在
             if agent_id in self.agents:
                 # 创建新的消息实例以避免引用问题
@@ -137,7 +140,7 @@ class Router:
                     receiver=agent_id,
                     content=message.content,
                     msg_type=message.type,
-                    metadata=message.metadata.copy()
+                    metadata=message.metadata.copy(),
                 )
                 try:
                     self.agents[agent_id].receive(broadcast_msg)
@@ -151,25 +154,25 @@ class Router:
             else:
                 results[agent_id] = False
                 self.stats["routing_errors"] += 1
-                
+
         return results
 
-    def add_routing_rule(self, rule_func: Callable[[Message], Optional[str]]) -> None:
+    def add_routing_rule(self, rule_func: Callable[[Message], str | None]) -> None:
         """
         添加条件路由规则
-        
+
         Args:
             rule_func: 路由规则函数，接受消息作为参数并返回目标Agent ID或None
         """
         self.routing_rules.append(rule_func)
 
-    def get_message_history(self, limit: Optional[int] = None) -> List[Message]:
+    def get_message_history(self, limit: int | None = None) -> list[Message]:
         """
         获取消息历史
-        
+
         Args:
             limit: 限制返回的消息数量
-            
+
         Returns:
             消息历史列表
         """
@@ -177,31 +180,31 @@ class Router:
             return self.message_history[-limit:]
         return self.message_history.copy()
 
-    def get_agent(self, agent_id: str) -> Optional[Agent]:
+    def get_agent(self, agent_id: str) -> Agent | None:
         """
         获取指定ID的Agent
-        
+
         Args:
             agent_id: Agent ID
-            
+
         Returns:
             Agent实例或None
         """
         return self.agents.get(agent_id)
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         """
         列出所有已注册的Agents
-        
+
         Returns:
             Agent ID列表
         """
         return list(self.agents.keys())
 
-    def get_router_stats(self) -> Dict[str, Any]:
+    def get_router_stats(self) -> dict[str, Any]:
         """
         获取路由器统计信息
-        
+
         Returns:
             路由器统计信息字典
         """
@@ -209,35 +212,37 @@ class Router:
             "agent_count": len(self.agents),
             "routing_rule_count": len(self.routing_rules),
             "message_history_count": len(self.message_history),
-            "stats": self.stats.copy()
+            "stats": self.stats.copy(),
         }
 
     def export_message_log(self, filepath: str) -> bool:
         """
         导出消息日志到文件
-        
+
         Args:
             filepath: 导出文件路径
-            
+
         Returns:
             是否导出成功
         """
         try:
             log_data = []
             for msg in self.message_history:
-                log_data.append({
-                    "id": msg.id,
-                    "timestamp": msg.timestamp.isoformat(),
-                    "sender": msg.sender,
-                    "receiver": msg.receiver,
-                    "type": msg.type,
-                    "content": str(msg.content),
-                    "metadata": msg.metadata
-                })
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
+                log_data.append(
+                    {
+                        "id": msg.id,
+                        "timestamp": msg.timestamp.isoformat(),
+                        "sender": msg.sender,
+                        "receiver": msg.receiver,
+                        "type": msg.type,
+                        "content": str(msg.content),
+                        "metadata": msg.metadata,
+                    }
+                )
+
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(log_data, f, ensure_ascii=False, indent=2)
-            
+
             return True
         except Exception as e:
             logger.error("导出消息日志失败: %s", e)

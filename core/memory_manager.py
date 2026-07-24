@@ -13,9 +13,9 @@
 三个后端类保持不变，仅被组合——零破坏现有实现。
 """
 
-from typing import Any, Dict, List, Optional
 import json
 import logging
+from typing import Any
 
 from .memory import Memory
 from .vector_memory import VectorMemory
@@ -40,8 +40,8 @@ class MemoryManager:
 
     def __init__(
         self,
-        memory: Optional[Memory] = None,
-        vector_memory: Optional[VectorMemory] = None,
+        memory: Memory | None = None,
+        vector_memory: VectorMemory | None = None,
         conversation_max_history: int = 10,
     ):
         """
@@ -51,10 +51,10 @@ class MemoryManager:
             conversation_max_history: 内置会话历史保留的最大消息条数
         """
         self.memory: Memory = memory if memory is not None else Memory()
-        self.vector_memory: Optional[VectorMemory] = vector_memory
+        self.vector_memory: VectorMemory | None = vector_memory
         self.conversation_max_history = conversation_max_history
         # 内置会话历史（OpenAI messages 风格）
-        self._conversation: List[Dict[str, str]] = []
+        self._conversation: list[dict[str, str]] = []
 
     # ------------------------------------------------------------------
     # KV 通道（委托 Memory）
@@ -70,7 +70,7 @@ class MemoryManager:
     # ------------------------------------------------------------------
     # 向量通道（委托 VectorMemory）
     # ------------------------------------------------------------------
-    def learn(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    def learn(self, text: str, metadata: dict[str, Any] | None = None) -> str | None:
         """
         存入一条语义记忆（供后续语义召回）
 
@@ -81,7 +81,7 @@ class MemoryManager:
             return None
         return self.vector_memory.add(text, metadata)
 
-    def recall_relevant(self, query: str, top_k: int = 3) -> List[str]:
+    def recall_relevant(self, query: str, top_k: int = 3) -> list[str]:
         """
         按语义召回相关记忆文本
 
@@ -103,7 +103,7 @@ class MemoryManager:
         self._conversation.append({"role": role, "content": content})
         self._trim_conversation()
 
-    def get_conversation(self) -> List[Dict[str, str]]:
+    def get_conversation(self) -> list[dict[str, str]]:
         """获取会话历史副本"""
         return [m.copy() for m in self._conversation]
 
@@ -127,9 +127,9 @@ class MemoryManager:
     def build_context(
         self,
         user_input: str,
-        system_prompt: Optional[str] = None,
-        extra_context: Optional[List[Dict[str, Any]]] = None,
-    ) -> List[Dict[str, Any]]:
+        system_prompt: str | None = None,
+        extra_context: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         聚合所有记忆，产出 LLM 的完整 messages
 
@@ -149,7 +149,7 @@ class MemoryManager:
         Returns:
             OpenAI 风格的 messages 列表，可直接喂给 LLM
         """
-        messages: List[Dict[str, Any]] = []
+        messages: list[dict[str, Any]] = []
 
         # 1. system prompt
         if system_prompt:
@@ -159,19 +159,23 @@ class MemoryManager:
         long_term = self.memory.list_long_term_memory()
         if long_term:
             memory_brief = json.dumps(long_term, ensure_ascii=False)
-            messages.append({
-                "role": "system",
-                "content": f"以下是你的长期记忆，供参考：\n{memory_brief}",
-            })
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"以下是你的长期记忆，供参考：\n{memory_brief}",
+                }
+            )
 
         # 3. 向量召回（语义相关经验）
         related = self.recall_relevant(user_input, top_k=3)
         if related:
             recall_text = "\n".join(f"- {t}" for t in related)
-            messages.append({
-                "role": "system",
-                "content": f"以下是与你当前任务相关的历史经验，供参考：\n{recall_text}",
-            })
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"以下是与你当前任务相关的历史经验，供参考：\n{recall_text}",
+                }
+            )
 
         # 4. 会话历史（多轮上下文）
         messages.extend(self.get_conversation())
@@ -187,7 +191,7 @@ class MemoryManager:
     # ------------------------------------------------------------------
     # 状态
     # ------------------------------------------------------------------
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         """记忆状态摘要"""
         mem_stats = self.memory.get_memory_stats()
         return {

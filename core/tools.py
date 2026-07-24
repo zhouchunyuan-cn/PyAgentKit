@@ -6,18 +6,18 @@
 工具自带 JSON Schema，供 LLM function-calling 使用。
 """
 
-from typing import Dict, Any, Optional, Callable, List
-import requests
+import ast
 import json
+import logging
+import operator
 import os
 import re
 import time
-import operator
-import ast
-import logging
 import urllib.parse
 import urllib.request
-from .mcp_tools import MCPToolRegistry, ConcreteMCPIntegrationTool
+from typing import Any
+
+from .mcp_tools import ConcreteMCPIntegrationTool, MCPToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class Tool:
         parameters: 入参的 JSON Schema，供 function-calling 使用
     """
 
-    def __init__(self, name: str, description: str, parameters: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, description: str, parameters: dict[str, Any] | None = None):
         """
         初始化工具
 
@@ -51,7 +51,7 @@ class Tool:
         """
         raise NotImplementedError
 
-    def to_openai_schema(self) -> Dict[str, Any]:
+    def to_openai_schema(self) -> dict[str, Any]:
         """
         转换为 GLM/OpenAI function-calling 要求的工具 schema 格式
 
@@ -77,13 +77,23 @@ class HttpTool(Tool):
     """
 
     # 可重试的异常关键字（网络/限流类）
-    _RETRYABLE_KEYWORDS = ("timeout", "connection", "urlopen", "timed out", "429", "500", "502", "503", "504")
+    _RETRYABLE_KEYWORDS = (
+        "timeout",
+        "connection",
+        "urlopen",
+        "timed out",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    )
 
     def __init__(
         self,
         name: str,
         description: str,
-        parameters: Optional[Dict[str, Any]] = None,
+        parameters: dict[str, Any] | None = None,
         timeout: float = 8.0,
         max_retries: int = 2,
         retry_base_delay: float = 1.0,
@@ -100,7 +110,7 @@ class HttpTool(Tool):
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
 
-    def _http_get(self, url: str, headers: Optional[Dict[str, str]] = None) -> str:
+    def _http_get(self, url: str, headers: dict[str, str] | None = None) -> str:
         """
         带 timeout + 指数退避重试的 HTTP GET
 
@@ -115,7 +125,7 @@ class HttpTool(Tool):
             最后一次仍失败时抛出原始异常
         """
         req = urllib.request.Request(url, headers=headers or {"User-Agent": "PyAgentKit/1.0"})
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
@@ -123,9 +133,14 @@ class HttpTool(Tool):
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries and self._is_retryable(e):
-                    delay = self.retry_base_delay * (2 ** attempt)
-                    logger.debug("HTTP 请求失败（%s），%.1fs 后重试 (%d/%d)",
-                                 e, delay, attempt + 1, self.max_retries)
+                    delay = self.retry_base_delay * (2**attempt)
+                    logger.debug(
+                        "HTTP 请求失败（%s），%.1fs 后重试 (%d/%d)",
+                        e,
+                        delay,
+                        attempt + 1,
+                        self.max_retries,
+                    )
                     time.sleep(delay)
                     continue
                 raise
@@ -135,7 +150,6 @@ class HttpTool(Tool):
         """判断异常是否值得重试"""
         msg = str(error).lower()
         return any(k in msg for k in self._RETRYABLE_KEYWORDS)
-
 
 
 class WebSearchTool(HttpTool):
@@ -157,7 +171,13 @@ class WebSearchTool(HttpTool):
         "深度学习": "深度学习是机器学习的一个分支，使用神经网络来模拟人脑处理信息的方式。",
     }
 
-    def __init__(self, mock_mode: bool = False, timeout: float = 8.0, max_results: int = 5, max_retries: int = 2):
+    def __init__(
+        self,
+        mock_mode: bool = False,
+        timeout: float = 8.0,
+        max_results: int = 5,
+        max_retries: int = 2,
+    ):
         """
         初始化网络搜索工具
 
@@ -189,7 +209,7 @@ class WebSearchTool(HttpTool):
         self.mock_mode = mock_mode
         self.max_results = max_results
 
-    def run(self, query: str) -> Dict[str, Any]:
+    def run(self, query: str) -> dict[str, Any]:
         """
         通过网络搜索获取信息
 
@@ -210,7 +230,7 @@ class WebSearchTool(HttpTool):
                 "source": "MockSearchEngine",
             }
 
-        results: List[Dict[str, str]] = []
+        results: list[dict[str, str]] = []
 
         # 路径1：DuckDuckGo Instant Answer API（结构化摘要）
         try:
@@ -241,9 +261,7 @@ class WebSearchTool(HttpTool):
             }
 
         # 为兼容旧调用方（只看 result 字段），同时提供拼接的文本摘要
-        summary = "\n".join(
-            f"- {r.get('title', '')}: {r.get('snippet', '')}" for r in results
-        )
+        summary = "\n".join(f"- {r.get('title', '')}: {r.get('snippet', '')}" for r in results)
         return {
             "query": query,
             "results": results[: self.max_results],
@@ -251,7 +269,7 @@ class WebSearchTool(HttpTool):
             "source": "DuckDuckGo",
         }
 
-    def _search_instant_answer(self, query: str) -> Optional[Dict[str, str]]:
+    def _search_instant_answer(self, query: str) -> dict[str, str] | None:
         """DuckDuckGo Instant Answer API（结构化摘要）"""
         encoded_query = urllib.parse.quote(query)
         url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disamb=1"
@@ -273,7 +291,7 @@ class WebSearchTool(HttpTool):
             "url": data.get("AbstractURL") or "",
         }
 
-    def _search_html(self, query: str) -> List[Dict[str, str]]:
+    def _search_html(self, query: str) -> list[dict[str, str]]:
         """
         解析 DuckDuckGo Lite 结果页，提取多条结果
 
@@ -284,7 +302,7 @@ class WebSearchTool(HttpTool):
         url = f"https://lite.duckduckgo.com/lite/?q={encoded_query}"
         html = self._http_get(url, headers={"User-Agent": "Mozilla/5.0 (PyAgentKit web search)"})
 
-        results: List[Dict[str, str]] = []
+        results: list[dict[str, str]] = []
         # Lite 页结构：<a rel="nofollow" href="//duckduckgo.com/l/?uddg=<真实URL>">标题文本</a>
         # 后面同行的 td 含摘要文本。用正则逐个结果块提取。
         link_re = re.compile(
@@ -348,31 +366,31 @@ class CalculatorTool(Tool):
     def eval_expr(self, expr: str) -> float:
         """
         安全地计算数学表达式
-        
+
         Args:
             expr: 数学表达式字符串
-            
+
         Returns:
             计算结果
         """
         # 预处理表达式，移除空格
-        expr = re.sub(r'\s+', '', expr)
-        
+        expr = re.sub(r"\s+", "", expr)
+
         # 验证表达式只包含允许的字符
-        if not re.match(r'^[0-9+\-*/().% ]+$', expr):
+        if not re.match(r"^[0-9+\-*/().% ]+$", expr):
             raise ValueError("表达式包含不允许的字符")
-            
+
         # 解析并计算表达式
-        node = ast.parse(expr, mode='eval')
+        node = ast.parse(expr, mode="eval")
         return self._eval_node(node.body)
 
     def _eval_node(self, node: ast.AST) -> float:
         """
         递归计算AST节点的值
-        
+
         Args:
             node: AST节点
-            
+
         Returns:
             节点值
         """
@@ -394,27 +412,21 @@ class CalculatorTool(Tool):
         else:
             raise ValueError(f"不支持的表达式节点类型: {type(node)}")
 
-    def run(self, expression: str) -> Dict[str, Any]:
+    def run(self, expression: str) -> dict[str, Any]:
         """
         执行数学计算
-        
+
         Args:
             expression: 数学表达式
-            
+
         Returns:
             计算结果字典
         """
         try:
             result = self.eval_expr(expression)
-            return {
-                "expression": expression,
-                "result": result
-            }
+            return {"expression": expression, "result": result}
         except Exception as e:
-            return {
-                "expression": expression,
-                "error": str(e)
-            }
+            return {"expression": expression, "error": str(e)}
 
 
 class FileReadTool(Tool):
@@ -445,33 +457,29 @@ class FileReadTool(Tool):
         )
         self.allowed_dir = os.path.realpath(allowed_dir)
 
-    def run(self, path: str) -> Dict[str, Any]:
+    def run(self, path: str) -> dict[str, Any]:
         """
         读取文件内容
-        
+
         Args:
             path: 文件路径
-            
+
         Returns:
             文件内容或错误信息
         """
         try:
             # 安全检查：解析真实路径后，确保在允许的工作目录内
             real_path = os.path.realpath(path)
-            if not (real_path == self.allowed_dir or real_path.startswith(self.allowed_dir + os.sep)):
+            if not (
+                real_path == self.allowed_dir or real_path.startswith(self.allowed_dir + os.sep)
+            ):
                 raise ValueError("不允许访问该路径（超出工作目录范围）")
 
-            with open(real_path, 'r', encoding='utf-8') as f:
+            with open(real_path, encoding="utf-8") as f:
                 content = f.read()
-            return {
-                "path": path,
-                "content": content
-            }
+            return {"path": path, "content": content}
         except Exception as e:
-            return {
-                "path": path,
-                "error": str(e)
-            }
+            return {"path": path, "error": str(e)}
 
 
 class DatabaseTool(Tool):
@@ -512,12 +520,13 @@ class DatabaseTool(Tool):
         # 复用同一连接：内存库的表只在该连接生命周期内存在，
         # 若每次 run 都新建连接，建表后插入会找不到表。
         import sqlite3
+
         # check_same_thread=False 允许在 Orchestrator 的线程池中复用
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = __import__("threading").Lock()
 
-    def run(self, query: str) -> Dict[str, Any]:
+    def run(self, query: str) -> dict[str, Any]:
         """
         执行 SQL 语句
 
@@ -563,10 +572,10 @@ class DatabaseTool(Tool):
 
     def close(self) -> None:
         """关闭数据库连接"""
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             self._conn.close()
-        except Exception:
-            pass
 
 
 class ToolRegistry:
@@ -575,7 +584,7 @@ class ToolRegistry:
     """
 
     def __init__(self):
-        self.tools: Dict[str, Tool] = {}
+        self.tools: dict[str, Tool] = {}
         # 添加对MCP工具的支持
         self.mcp_registry = MCPToolRegistry()
         self.mcp_integration_tool = ConcreteMCPIntegrationTool(self.mcp_registry)
@@ -584,19 +593,19 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """
         注册工具
-        
+
         Args:
             tool: 工具对象
         """
         self.tools[tool.name] = tool
 
-    def get(self, name: str) -> Optional[Tool]:
+    def get(self, name: str) -> Tool | None:
         """
         获取工具
-        
+
         Args:
             name: 工具名称
-            
+
         Returns:
             工具对象或None
         """
@@ -622,7 +631,7 @@ class ToolRegistry:
         else:
             raise ValueError(f"Tool '{tool_name}' not found")
 
-    def to_openai_tools(self) -> List[Dict[str, Any]]:
+    def to_openai_tools(self) -> list[dict[str, Any]]:
         """
         导出全部工具的 OpenAI/GLM function-calling schema 列表
 
@@ -633,10 +642,10 @@ class ToolRegistry:
         """
         return [tool.to_openai_schema() for tool in self.tools.values()]
 
-    def list_tools(self) -> Dict[str, str]:
+    def list_tools(self) -> dict[str, str]:
         """
         列出所有注册的工具
-        
+
         Returns:
             工具名称和描述的字典
         """
@@ -649,23 +658,23 @@ class ToolRegistry:
     def register_mcp_tool(self, mcp_tool) -> bool:
         """
         注册MCP工具
-        
+
         Args:
             mcp_tool: MCP工具实例
-            
+
         Returns:
             是否注册成功
         """
         return self.mcp_registry.register_tool(mcp_tool)
 
-    def execute_mcp_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+    def execute_mcp_tool(self, tool_name: str, **kwargs) -> dict[str, Any]:
         """
         执行MCP工具
-        
+
         Args:
             tool_name: MCP工具名称
             **kwargs: 执行参数
-            
+
         Returns:
             执行结果
         """

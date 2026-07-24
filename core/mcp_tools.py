@@ -4,13 +4,13 @@ MCP（Model Context Protocol）工具集成
 提供接入符合 MCP 协议的外部工具的能力，作为 Agent 工具系统的扩展入口。
 """
 
-from typing import Dict, Any, Optional, List, Union
-import json
-import uuid
 import logging
+from typing import Any
+
 import requests
 
 logger = logging.getLogger(__name__)
+
 
 class MCPTool:
     """
@@ -21,7 +21,7 @@ class MCPTool:
     def __init__(self, name: str, description: str, mcp_endpoint: str):
         """
         初始化MCP工具
-        
+
         Args:
             name: 工具名称
             description: 工具描述
@@ -36,7 +36,7 @@ class MCPTool:
     def initialize(self) -> bool:
         """
         初始化MCP工具连接
-        
+
         Returns:
             是否初始化成功
         """
@@ -56,10 +56,10 @@ class MCPTool:
             self.initialized = False
             return False
 
-    def get_capabilities(self) -> List[str]:
+    def get_capabilities(self) -> list[str]:
         """
         获取工具支持的功能列表
-        
+
         Returns:
             功能列表
         """
@@ -67,61 +67,49 @@ class MCPTool:
             self.initialize()
         return self.capabilities
 
-    def run(self, **kwargs) -> Dict[str, Any]:
+    def run(self, **kwargs) -> dict[str, Any]:
         """
         执行MCP工具命令
-        
+
         Args:
             **kwargs: 命令参数
-            
+
         Returns:
             执行结果
         """
-        if not self.initialized:
-            if not self.initialize():
-                return {
-                    "success": False,
-                    "error": "Failed to initialize MCP tool connection",
-                    "tool": self.name
-                }
-            
+        if not self.initialized and not self.initialize():
+            return {
+                "success": False,
+                "error": "Failed to initialize MCP tool connection",
+                "tool": self.name,
+            }
+
         command = kwargs.get("command", "")
         params = kwargs.get("params", {})
-        
+
         try:
             # 构造请求数据
-            request_data = {
-                "command": command,
-                "params": params
-            }
-            
+            request_data = {"command": command, "params": params}
+
             # 发送POST请求到MCP服务
             response = requests.post(
                 f"{self.mcp_endpoint}/execute",
                 json=request_data,
                 headers={"Content-Type": "application/json"},
-                timeout=30
+                timeout=30,
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
-                return {
-                    "success": True,
-                    "result": result,
-                    "tool": self.name
-                }
+                return {"success": True, "result": result, "tool": self.name}
             else:
                 return {
                     "success": False,
                     "error": f"HTTP {response.status_code}: {response.text}",
-                    "tool": self.name
+                    "tool": self.name,
                 }
         except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "tool": self.name
-            }
+            return {"success": False, "error": str(e), "tool": self.name}
 
 
 class MCPToolRegistry:
@@ -134,31 +122,31 @@ class MCPToolRegistry:
         """
         初始化MCP工具注册表
         """
-        self.mcp_tools: Dict[str, MCPTool] = {}
+        self.mcp_tools: dict[str, MCPTool] = {}
 
     def register_tool(self, tool: MCPTool) -> bool:
         """
         注册MCP工具
-        
+
         Args:
             tool: MCP工具实例
-            
+
         Returns:
             是否注册成功
         """
         if not isinstance(tool, MCPTool):
             return False
-            
+
         self.mcp_tools[tool.name] = tool
         return True
 
     def unregister_tool(self, tool_name: str) -> bool:
         """
         注销MCP工具
-        
+
         Args:
             tool_name: 工具名称
-            
+
         Returns:
             是否注销成功
         """
@@ -167,35 +155,35 @@ class MCPToolRegistry:
             return True
         return False
 
-    def get_tool(self, tool_name: str) -> Optional[MCPTool]:
+    def get_tool(self, tool_name: str) -> MCPTool | None:
         """
         获取MCP工具
-        
+
         Args:
             tool_name: 工具名称
-            
+
         Returns:
             MCP工具实例或None
         """
         return self.mcp_tools.get(tool_name)
 
-    def list_tools(self) -> Dict[str, str]:
+    def list_tools(self) -> dict[str, str]:
         """
         列出所有注册的MCP工具
-        
+
         Returns:
             工具名称和描述的字典
         """
         return {name: tool.description for name, tool in self.mcp_tools.items()}
 
-    def execute_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+    def execute_tool(self, tool_name: str, **kwargs) -> dict[str, Any]:
         """
         执行MCP工具
-        
+
         Args:
             tool_name: 工具名称
             **kwargs: 执行参数
-            
+
         Returns:
             执行结果
         """
@@ -204,9 +192,9 @@ class MCPToolRegistry:
             return {
                 "success": False,
                 "error": f"MCP tool '{tool_name}' not found",
-                "tool": tool_name
+                "tool": tool_name,
             }
-            
+
         return tool.run(**kwargs)
 
 
@@ -216,7 +204,7 @@ class MCPIntegrationTool:
     作为Agent访问MCP工具的统一入口
     """
 
-    def __init__(self, name: str, description: str, parameters: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, description: str, parameters: dict[str, Any] | None = None):
         self.name = name
         self.description = description
         # 入参 schema，供 function-calling 使用
@@ -236,7 +224,7 @@ class MCPIntegrationTool:
         """
         raise NotImplementedError
 
-    def to_openai_schema(self) -> Dict[str, Any]:
+    def to_openai_schema(self) -> dict[str, Any]:
         """
         转换为 GLM/OpenAI function-calling 要求的工具 schema 格式
         """
@@ -258,21 +246,21 @@ class ConcreteMCPIntegrationTool(MCPIntegrationTool):
     def __init__(self, mcp_registry: MCPToolRegistry):
         """
         初始化MCP集成工具
-        
+
         Args:
             mcp_registry: MCP工具注册表
         """
         super().__init__("mcp_integration", "集成的MCP工具访问接口")
         self.mcp_registry = mcp_registry
 
-    def run(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+    def run(self, tool_name: str, **kwargs) -> dict[str, Any]:
         """
         执行指定的MCP工具
-        
+
         Args:
             tool_name: MCP工具名称
             **kwargs: 工具执行参数
-            
+
         Returns:
             执行结果
         """

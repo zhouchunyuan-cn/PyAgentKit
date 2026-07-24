@@ -6,15 +6,16 @@
 
 也支持注册自定义工具，扩展可配置的工具集。
 """
-from typing import Any, Callable, Dict, List, Optional, Type
+
 import logging
+from collections.abc import Callable
 
 from .tools import (
+    CalculatorTool,
+    DatabaseTool,
+    FileReadTool,
     Tool,
     WebSearchTool,
-    CalculatorTool,
-    FileReadTool,
-    DatabaseTool,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class ToolFactory:
 
     def __init__(self):
         # name -> 构造器（无参 callable，返回 Tool 实例）
-        self._registry: Dict[str, Callable[[], Tool]] = {}
+        self._registry: dict[str, Callable[[], Tool]] = {}
         self._register_builtin()
 
     def _register_builtin(self) -> None:
@@ -55,7 +56,7 @@ class ToolFactory:
         """
         self._registry[name] = constructor
 
-    def register_class(self, name: str, tool_class: Type[Tool]) -> None:
+    def register_class(self, name: str, tool_class: type[Tool]) -> None:
         """注册一个工具类（便捷方法）"""
         self.register(name, tool_class)
 
@@ -74,16 +75,14 @@ class ToolFactory:
         """
         constructor = self._registry.get(name)
         if constructor is None:
-            raise ToolNotFoundError(
-                f"未知工具 '{name}'。可用工具: {self.list_tools()}"
-            )
+            raise ToolNotFoundError(f"未知工具 '{name}'。可用工具: {self.list_tools()}")
         return constructor()
 
-    def create_many(self, names: List[str]) -> List[Tool]:
+    def create_many(self, names: list[str]) -> list[Tool]:
         """批量创建工具实例"""
         return [self.create(name) for name in names]
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         """列出所有已注册的工具名"""
         return sorted(self._registry.keys())
 
