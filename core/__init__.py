@@ -22,6 +22,7 @@ from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
 from .memory import Memory
 from .memory_manager import MemoryManager
 from .message import Message
+from .react_engine import ReactEngine
 from .router import Router
 from .session import ConversationSession, SessionManager
 from .team import (
@@ -73,6 +74,7 @@ __all__ = [
     "SharedContext",
     "Task",
     "AsyncRouter",
+    "ReactEngine",
     "Tracer",
     "Trace",
     "TraceSpan",

@@ -1,43 +1,30 @@
 """
 Agent 智能体基类
 
-定义 PyAgentKit 中所有 Agent 的核心抽象：角色设定、记忆、工具、通信，
-以及核心的 think() ReAct 推理循环（思考→调工具→观察→再思考）。
+定义 PyAgentKit 中所有 Agent 的核心抽象：角色设定、记忆、工具、通信。
+ReAct 推理循环委托给 ReactEngine（core/react_engine.py），保持对外接口不变。
+
+职责划分：
+- Agent：身份（id/name/capabilities）、通信（send/receive）、工具管理、记忆存取
+- ReactEngine：ReAct 推理循环（think）、流式输出、token 统计
 """
 
-import json
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from .llm import LLMClient, TokenUsage
 from .memory import Memory
 from .memory_manager import MemoryManager
 from .message import Message
+from .react_engine import ReactEngine
 from .tools import ToolRegistry
-from .trace import Tracer
 
 if TYPE_CHECKING:
     from .router import Router
 
 logger = logging.getLogger(__name__)
-
-
-def _emit_via_callback(text: str, callback: Callable[[str], None], chunk_size: int = 8) -> None:
-    """
-    将已有文本按固定大小切分，通过回调"模拟流式"逐段输出
-
-    用于 think() 已通过非流式拿到最终答复后，仍能以流式体验呈现给用户，
-    而无需重复调用 LLM（避免双调用的 token 浪费）。
-
-    Args:
-        text: 已有的完整文本
-        callback: 每段文本的回调
-        chunk_size: 每段字符数（默认 8，平衡流畅度与调用开销）
-    """
-    for i in range(0, len(text), chunk_size):
-        callback(text[i : i + chunk_size])
 
 
 class Agent(ABC):
@@ -46,10 +33,10 @@ class Agent(ABC):
 
     核心功能:
     - 角色设定（system prompt）
-    - 记忆（memory）
+    - 记忆（memory / brain）
     - 工具调用（tools）
     - 通信接口（send/receive）
-    - LLM 推理（think / ReAct 循环）
+    - LLM 推理（think，委托给 ReactEngine）
     """
 
     # ReAct 循环最大步数，防止工具调用死循环
@@ -95,73 +82,54 @@ class Agent(ABC):
         # 统一记忆管理器（外观）：组合 KV + 向量 + 会话，对外一个接口
         # 现有 self.memory / self.vector_memory 作为其后端，保持向后兼容
         self.brain = MemoryManager(memory=self.memory, vector_memory=self.vector_memory)
-        # token 用量累计（每次 think 累加）
-        self._token_usage = TokenUsage()
         self.router: Router | None = None
         # 统一使用 ToolRegistry 管理 LLM 可调用的工具
         self.tool_registry = ToolRegistry()
-        # 保留旧字段以兼容外部访问
+        # 保留旧字段以兼容外部访问（monitor、测试等读此属性）
         self.tools: dict[str, Any] = self.tool_registry.tools
+        # ReAct 推理引擎（委托模式：think 等推理逻辑内聚于此）
+        self._engine = ReactEngine(self)
+
+    # ------------------------------------------------------------------
+    # 身份与能力
+    # ------------------------------------------------------------------
 
     def has_capability(self, capability: str) -> bool:
-        """
-        判断 Agent 是否具备某项能力
-
-        Args:
-            capability: 能力名称
-
-        Returns:
-            是否具备
-        """
+        """判断 Agent 是否具备某项能力"""
         return capability in self.capabilities
 
     def has_any_capability(self, capabilities: list[str]) -> bool:
-        """
-        判断 Agent 是否具备给定能力中的任意一项
-
-        Args:
-            capabilities: 能力名称列表
-
-        Returns:
-            是否至少具备一项
-        """
+        """判断 Agent 是否具备给定能力中的任意一项"""
         return any(c in self.capabilities for c in capabilities)
 
-    def set_router(self, router: "Router") -> None:
-        """
-        设置路由器
+    # ------------------------------------------------------------------
+    # 注入
+    # ------------------------------------------------------------------
 
-        Args:
-            router: 路由器实例
-        """
+    def set_router(self, router: "Router") -> None:
+        """设置路由器"""
         self.router = router
 
     def set_vector_memory(self, vector_memory) -> None:
         """
         注入向量记忆，启用语义召回
 
-        注入后，think() 在决策前会按当前输入语义召回相关记忆并注入上下文，
-        使 Agent 能够"想起"相关的历史经验。
-
-        Args:
-            vector_memory: VectorMemory 实例
+        注入后同步更新 brain 的后端，使 build_context 能用上新的向量记忆。
         """
         self.vector_memory = vector_memory
-        # 同步更新 brain 的后端，使 build_context 能用上新的向量记忆
         self.brain.vector_memory = vector_memory
+
+    # ------------------------------------------------------------------
+    # 消息接收（子类契约）
+    # ------------------------------------------------------------------
 
     @abstractmethod
     def receive(self, message: Message) -> None:
-        """
-        接收消息的抽象方法，子类必须实现
-
-        Args:
-            message: 接收到的消息
-        """
+        """接收消息的抽象方法，子类必须实现"""
         pass
 
     # ------------------------------------------------------------------
-    # LLM 推理（ReAct 循环）
+    # LLM 推理（委托给 ReactEngine）
     # ------------------------------------------------------------------
 
     def think(
@@ -169,227 +137,32 @@ class Agent(ABC):
         user_input: str,
         context_messages: list[dict[str, Any]] | None = None,
         use_tools: bool = True,
-        stream_callback: Callable[[str], None] | None = None,
+        stream_callback: Any = None,
     ) -> str:
         """
-        ReAct 推理主循环
+        ReAct 推理主循环（委托给 ReactEngine）
 
-        流程：
-        1. 组装对话：system_prompt + 相关长期记忆 + 历史 + 当前输入
-        2. 循环调用 LLM：
-           - 若模型请求工具（finish_reason=="tool_calls"）：执行工具，把结果以 role="tool" 回传，继续循环
-           - 若模型给出最终答复（finish_reason=="stop"）：返回内容
-        3. 把本次交互摘要存入记忆
+        详见 ReactEngine.think() 的实现。对外接口保持不变。
 
         Args:
             user_input: 当前用户/上游输入文本
-            context_messages: 额外的上下文消息（如上游 Agent 传来的结构化数据），可选
+            context_messages: 额外的上下文消息，可选
             use_tools: 是否允许模型调用工具
-            stream_callback: 流式回调；传入后，最终答复以流式方式产出，
-                             每收到一段文本片段就回调一次（如 CLI 实时打印）。
-                             仅最终答复流式，工具调用步骤仍用非流式。
+            stream_callback: 流式回调；传入后最终答复以流式方式产出
 
         Returns:
             模型的最终文本答复
         """
-        if self.llm is None:
-            raise RuntimeError(
-                f"Agent '{self.name}' 未配置 LLM 客户端，无法执行 think()。"
-                "请在初始化时传入 llm_client。"
-            )
-
-        # 1. 组装初始消息列表
-        messages: list[dict[str, Any]] = self._build_initial_messages(user_input, context_messages)
-
-        # 工具 schema（仅在启用工具且有工具时提供）
-        tools = (
-            self.tool_registry.to_openai_tools()
-            if (use_tools and self.tool_registry.tools)
-            else None
-        )
-
-        # trace 插桩（未启用时零开销）
-        _span = Tracer.start_span(
-            f"think:{self.name}", agent=self.agent_id, input_preview=user_input[:50]
-        )
-
-        # 2. ReAct 循环
-        for step in range(self.max_steps):
-            result = self.llm.chat(messages, tools=tools, tool_choice="auto" if tools else "none")
-            # 累计 token 用量
-            if result.usage is not None:
-                self._token_usage = self._token_usage.add(result.usage)
-
-            if not result.tool_calls:
-                # 模型给出最终答复（直接用本次结果，不再重复调用 LLM）
-                logger.debug("[%s] ReAct 完成，步数=%d", self.name, step + 1)
-                final_text = result.content
-                if stream_callback is not None and final_text:
-                    # 通过回调"模拟流式"逐段输出已有内容（不额外调用 LLM）
-                    _emit_via_callback(final_text, stream_callback)
-                self._remember_interaction(user_input, final_text)
-                Tracer.end_span(_span, steps=step + 1, total_tokens=self._token_usage.total_tokens)
-                return final_text
-
-            # 把助手的工具调用请求加入对话历史
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": result.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
-                            },
-                        }
-                        for tc in result.tool_calls
-                    ],
-                }
-            )
-
-            # 逐个执行工具，把结果作为 tool 消息回传
-            for tc in result.tool_calls:
-                tool_result = self._execute_tool_safe(tc.name, tc.arguments)
-                # 工具结果存入短期记忆，便于后续步骤引用
-                self.remember(f"tool:{tc.name}:{tc.id}", tool_result, memory_type="short")
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(tool_result, ensure_ascii=False),
-                    }
-                )
-
-        # 超过最大步数仍未结束，做一次不带工具的收尾调用以获取最终答复
-        logger.warning("[%s] 达到最大步数 %d，进行收尾调用", self.name, self.max_steps)
-        if stream_callback is not None:
-            # 收尾是唯一一次调用，用真流式实时输出
-            final_text = self._stream_fallback(messages, stream_callback)
-        else:
-            final = self.llm.chat(messages, tools=None, tool_choice="none")
-            if final.usage is not None:
-                self._token_usage = self._token_usage.add(final.usage)
-            final_text = final.content
-        self._remember_interaction(user_input, final_text)
-        Tracer.end_span(_span, steps=self.max_steps, total_tokens=self._token_usage.total_tokens)
-        return final_text
-
-    def _stream_fallback(
-        self,
-        messages: list[dict[str, Any]],
-        stream_callback: Callable[[str], None],
-    ) -> str:
-        """
-        收尾流式调用（单次，不重复）：用 chat_stream 实时产出最终答复
-
-        仅在 max_steps 耗尽后的收尾调用中使用——此时只调一次 LLM，
-        不存在双调用问题。流式失败则回退非流式。
-
-        Args:
-            messages: 当前对话消息
-            stream_callback: 每段文本片段的回调
-
-        Returns:
-            完整的最终答复文本
-        """
-        collected: list[str] = []
-        try:
-            for chunk in self.llm.chat_stream(messages, tools=None, tool_choice="none"):
-                if chunk.delta_content:
-                    collected.append(chunk.delta_content)
-                    stream_callback(chunk.delta_content)
-                if chunk.usage is not None:
-                    self._token_usage = self._token_usage.add(chunk.usage)
-            return "".join(collected)
-        except Exception as e:
-            logger.warning("[%s] 收尾流式失败，回退非流式: %s", self.name, e)
-            result = self.llm.chat(messages, tools=None, tool_choice="none")
-            if result.usage is not None:
-                self._token_usage = self._token_usage.add(result.usage)
-            stream_callback(result.content)
-            return result.content
-
-    def _build_initial_messages(
-        self,
-        user_input: str,
-        context_messages: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        组装初始对话消息（委托给统一记忆管理器）
-
-        把 system_prompt + 长期记忆 + 向量召回 + 会话历史 + 输入 聚合的逻辑
-        收敛到 MemoryManager.build_context，Agent 不再直接操作三套记忆。
-
-        Args:
-            user_input: 当前输入文本
-            context_messages: 额外上下文消息
-
-        Returns:
-            OpenAI 风格的消息列表
-        """
-        return self.brain.build_context(
-            user_input=user_input,
-            system_prompt=self.system_prompt,
-            extra_context=context_messages,
-        )
-
-    def _execute_tool_safe(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        """
-        安全执行工具调用，捕获异常避免中断循环
-
-        Args:
-            tool_name: 工具名称
-            arguments: 工具参数
-
-        Returns:
-            工具执行结果；出错时返回 {"error": ...}
-        """
-        try:
-            return self.tool_registry.execute(tool_name, **arguments)
-        except Exception as e:
-            logger.warning("[%s] 工具 '%s' 执行失败: %s", self.name, tool_name, e)
-            return {"error": f"工具 '{tool_name}' 执行失败: {str(e)}"}
-
-    def _remember_interaction(self, user_input: str, response: str) -> None:
-        """
-        将一次完整交互存入记忆
-
-        - 记录到会话历史（brain 的会话通道），使后续多轮对话能延续上下文
-        - 同时保留一份 KV 短期记忆（向后兼容）
-
-        Args:
-            user_input: 用户输入
-            response: Agent 回复
-        """
-        # 会话通道：记录本轮，使 build_context 下次能带上
-        self.brain.record_turn("user", user_input)
-        self.brain.record_turn("assistant", response)
-        # KV 通道：保留交互快照（向后兼容）
-        self.brain.remember(
-            f"interaction:{len(self.memory.list_short_term_memory())}",
-            {"input": user_input, "response": response},
-            memory_type="short",
-        )
+        return self._engine.think(user_input, context_messages, use_tools, stream_callback)
 
     # ------------------------------------------------------------------
-    # 通信（保留原有接口）
+    # 通信
     # ------------------------------------------------------------------
 
     def send(
         self, receiver_id: str, content: Any, msg_type: str = "text", metadata: dict | None = None
     ) -> None:
-        """
-        发送消息给其他Agent
-
-        Args:
-            receiver_id: 接收者ID
-            content: 消息内容
-            msg_type: 消息类型
-            metadata: 消息元数据
-        """
+        """发送消息给其他 Agent（通过 Router 路由）"""
         message = Message(
             sender=self.agent_id,
             receiver=receiver_id,
@@ -397,29 +170,15 @@ class Agent(ABC):
             msg_type=msg_type,
             metadata=metadata,
         )
-
-        # 如果设置了路由器，则自动路由消息
         if self.router:
             self.router.route_message(message)
         else:
-            # 否则返回消息对象以便手动路由
             return message
 
     async def async_send(
         self, receiver_id: str, content: Any, msg_type: str = "text", metadata: dict | None = None
     ) -> None:
-        """
-        异步发送消息（AsyncRouter 场景使用）
-
-        与 send() 平行，但把消息投递给 AsyncRouter（await route），
-        使接收方在消费协程中处理，打破同步递归。
-
-        Args:
-            receiver_id: 接收者ID
-            content: 消息内容
-            msg_type: 消息类型
-            metadata: 消息元数据
-        """
+        """异步发送消息（AsyncRouter 场景使用）"""
         message = Message(
             sender=self.agent_id,
             receiver=receiver_id,
@@ -428,25 +187,16 @@ class Agent(ABC):
             metadata=metadata,
         )
         if self.router is not None and hasattr(self.router, "route"):
-            # AsyncRouter 提供 async route
             await self.router.route(message)
         else:
-            # 无异步路由器，回退同步发送
             self.send(receiver_id, content, msg_type, metadata)
 
     def broadcast(self, content: Any, msg_type: str = "text", metadata: dict | None = None) -> None:
-        """
-        广播消息给所有Agent
-
-        Args:
-            content: 消息内容
-            msg_type: 消息类型
-            metadata: 消息元数据
-        """
+        """广播消息给所有 Agent"""
         if self.router:
             message = Message(
                 sender=self.agent_id,
-                receiver="all",  # 特殊接收者表示广播
+                receiver="all",
                 content=content,
                 msg_type=msg_type,
                 metadata=metadata,
@@ -456,81 +206,49 @@ class Agent(ABC):
             raise RuntimeError("Router not set. Cannot broadcast without a router.")
 
     # ------------------------------------------------------------------
-    # 工具与记忆（保留并增强原有接口）
+    # 工具管理
     # ------------------------------------------------------------------
 
     def add_tool(self, name: str, tool: Any) -> None:
-        """
-        添加工具到Agent
-
-        Args:
-            name: 工具名称
-            tool: 工具对象
-        """
-        # 统一通过 ToolRegistry 注册，保留同名兼容
+        """添加工具到 Agent"""
         self.tool_registry.register(tool)
         self.tools = self.tool_registry.tools
 
     def get_tool(self, name: str) -> Any:
-        """
-        获取工具
-
-        Args:
-            name: 工具名称
-
-        Returns:
-            工具对象
-        """
+        """获取工具"""
         return self.tools.get(name)
 
     def list_tools(self) -> list[str]:
-        """
-        列出所有可用工具
-
-        Returns:
-            工具名称列表
-        """
+        """列出所有可用工具名称"""
         return list(self.tools.keys())
 
-    def remember(self, key: str, value: Any, memory_type: str = "short") -> None:
-        """
-        将信息存入记忆
+    # ------------------------------------------------------------------
+    # 记忆存取（委托给 KV 记忆后端）
+    # ------------------------------------------------------------------
 
-        Args:
-            key: 记忆键
-            value: 记忆值
-            memory_type: 记忆类型 ("short" 或 "long")
-        """
+    def remember(self, key: str, value: Any, memory_type: str = "short") -> None:
+        """将信息存入 KV 记忆"""
         self.memory.store(key, value, memory_type)
 
     def recall(self, key: str) -> Any:
-        """
-        从记忆中检索信息
-
-        Args:
-            key: 记忆键
-
-        Returns:
-            记忆值
-        """
+        """从 KV 记忆中检索信息"""
         return self.memory.retrieve(key)
 
     # ------------------------------------------------------------------
-    # Token 统计与异步支持
+    # Token 统计（委托给 ReactEngine）
     # ------------------------------------------------------------------
 
     def get_token_usage(self) -> TokenUsage:
-        """
-        获取本 Agent 累计的 token 用量（跨多次 think 调用）
-
-        Returns:
-            TokenUsage（prompt/completion/total 累计值）
-        """
-        return self._token_usage
+        """获取本 Agent 累计的 token 用量（跨多次 think 调用）"""
+        return self._engine.get_token_usage()
 
     def reset_token_usage(self) -> None:
         """重置 token 用量统计"""
-        self._token_usage = TokenUsage()
+        self._engine.reset_token_usage()
+
+    # ------------------------------------------------------------------
+    # 异步支持
+    # ------------------------------------------------------------------
 
     async def receive_async(self, message: Message) -> None:
         """
@@ -539,7 +257,5 @@ class Agent(ABC):
         默认实现回退到同步 receive()，在阻塞线程池中执行。
         子类可覆盖为真正的 async 实现，以获得并发收益。
         """
-        import asyncio
-
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.receive, message)
