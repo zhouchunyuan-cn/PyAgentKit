@@ -76,8 +76,8 @@ class Agent(ABC):
         # 能力声明：协作系统据此匹配 Agent，而非依赖硬编码 name
         self.capabilities: list[str] = list(capabilities) if capabilities else []
         self.tags: list[str] = list(tags) if tags else []
+        # KV 记忆：默认不落盘（纯内存），需持久化时调 enable_persistence()
         self.memory = Memory()
-        # 向量记忆（语义召回），可选注入；默认 None
         self.vector_memory = None
         # 统一记忆管理器（外观）：组合 KV + 向量 + 会话，对外一个接口
         # 现有 self.memory / self.vector_memory 作为其后端，保持向后兼容
@@ -118,6 +118,20 @@ class Agent(ABC):
         """
         self.vector_memory = vector_memory
         self.brain.vector_memory = vector_memory
+
+    def enable_persistence(self, path: str | None = None) -> None:
+        """
+        启用 KV 记忆的持久化（落盘）
+
+        默认 Agent 的记忆是纯内存的（重启丢失）。调用此方法后，
+        长期记忆会写入按 agent_id 命名的 JSON 文件，重启后恢复。
+
+        Args:
+            path: 自定义文件路径；None 则用 memory_{agent_id}.json
+        """
+        filepath = path or f"memory_{self.agent_id}.json"
+        self.memory.persistent_storage_path = filepath
+        self.memory._load_persistent_memory()  # 加载已有记忆
 
     # ------------------------------------------------------------------
     # 消息接收（子类契约）

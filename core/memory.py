@@ -24,14 +24,15 @@ class Memory:
     """
 
     def __init__(
-        self, short_term_duration: int = 3600, persistent_storage_path: str = "memory.json"
+        self, short_term_duration: int = 3600, persistent_storage_path: str | None = None
     ):
         """
         初始化记忆模块
 
         Args:
             short_term_duration: 短期记忆持续时间（秒），默认1小时
-            persistent_storage_path: 长期记忆持久化存储路径
+            persistent_storage_path: 长期记忆持久化存储路径；
+                                      None（默认）表示不持久化（纯内存，重启丢失）
         """
         # 短期记忆存储在内存中
         self.short_term_memory: dict[str, dict[str, Any]] = {}
@@ -94,7 +95,7 @@ class Memory:
         从持久化存储加载长期记忆
         """
         try:
-            if os.path.exists(self.persistent_storage_path):
+            if self.persistent_storage_path and os.path.exists(self.persistent_storage_path):
                 with open(self.persistent_storage_path, encoding="utf-8") as f:
                     self.long_term_memory = json.load(f)
         except Exception as e:
@@ -102,8 +103,10 @@ class Memory:
 
     def _save_persistent_memory(self) -> None:
         """
-        将长期记忆保存到持久化存储
+        将长期记忆保存到持久化存储（path 为 None 时跳过）
         """
+        if not self.persistent_storage_path:
+            return
         try:
             with open(self.persistent_storage_path, "w", encoding="utf-8") as f:
                 json.dump(self.long_term_memory, f, ensure_ascii=False, indent=2)

@@ -361,3 +361,56 @@ class TestErrorRecovery:
         agent.tool_registry.register(CalculatorTool())
         with pytest.raises(RuntimeError, match="失败"):
             agent.think("计算")
+
+
+# --------------------------------------------------------------------
+# 持久化
+# --------------------------------------------------------------------
+
+
+class TestPersistence:
+    def test_default_memory_not_persisted(self, tmp_path):
+        """默认（不调 enable_persistence）不应产生文件"""
+        import os
+
+        agent = make_agent(ScriptedLLM([ChatResult(content="ok")]))
+        before = set(os.listdir("."))
+        agent.remember("k", "v", memory_type="long")
+        after = set(os.listdir("."))
+        # 不产生新的 memory 文件
+        new_files = {f for f in (after - before) if f.startswith("memory")}
+        assert new_files == set()
+
+    def test_enable_persistence_writes_file(self, tmp_path):
+        """enable_persistence 后长期记忆应落盘"""
+        filepath = str(tmp_path / "test_persist.json")
+        agent = make_agent(ScriptedLLM([]), )
+        agent.enable_persistence(filepath)
+        agent.remember("key1", "value1", memory_type="long")
+        import json
+
+        with open(filepath, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["key1"] == "value1"
+
+    def test_persistence_loads_on_enable(self, tmp_path):
+        """已有持久化文件，enable_persistence 后应加载"""
+        import json
+
+        filepath = str(tmp_path / "existing.json")
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump({"old_key": "old_value"}, f)
+        agent = make_agent(ScriptedLLM([]))
+        agent.enable_persistence(filepath)
+        assert agent.recall("old_key") == "old_value"
+
+    def test_multiple_agents_no_file_collision(self, tmp_path):
+        """多个 Agent 各自 enable_persistence，文件互不覆盖"""
+        a1 = make_agent(ScriptedLLM([]))
+        a2 = make_agent(ScriptedLLM([]))
+        a1.enable_persistence(str(tmp_path / "a1.json"))
+        a2.enable_persistence(str(tmp_path / "a2.json"))
+        a1.remember("k", "from_a1", memory_type="long")
+        a2.remember("k", "from_a2", memory_type="long")
+        assert a1.recall("k") == "from_a1"
+        assert a2.recall("k") == "from_a2"
