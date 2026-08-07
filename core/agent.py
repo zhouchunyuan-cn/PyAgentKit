@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from .llm import ChatResult, LLMClient, TokenUsage
+from .llm import LLMClient, TokenUsage
 from .memory import Memory
 from .memory_manager import MemoryManager
 from .message import Message
@@ -22,6 +22,22 @@ if TYPE_CHECKING:
     from .router import Router
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_via_callback(text: str, callback: Callable[[str], None], chunk_size: int = 8) -> None:
+    """
+    将已有文本按固定大小切分，通过回调"模拟流式"逐段输出
+
+    用于 think() 已通过非流式拿到最终答复后，仍能以流式体验呈现给用户，
+    而无需重复调用 LLM（避免双调用的 token 浪费）。
+
+    Args:
+        text: 已有的完整文本
+        callback: 每段文本的回调
+        chunk_size: 每段字符数（默认 8，平衡流畅度与调用开销）
+    """
+    for i in range(0, len(text), chunk_size):
+        callback(text[i : i + chunk_size])
 
 
 class Agent(ABC):
@@ -205,15 +221,12 @@ class Agent(ABC):
                 self._token_usage = self._token_usage.add(result.usage)
 
             if not result.tool_calls:
-                # 模型给出最终答复
+                # 模型给出最终答复（直接用本次结果，不再重复调用 LLM）
                 logger.debug("[%s] ReAct 完成，步数=%d", self.name, step + 1)
-                if stream_callback is not None:
-                    # 流式重新产出最终答复，实时回调
-                    final_text = self._stream_final_answer(
-                        messages, tools, stream_callback, base=result
-                    )
-                else:
-                    final_text = result.content
+                final_text = result.content
+                if stream_callback is not None and final_text:
+                    # 通过回调"模拟流式"逐段输出已有内容（不额外调用 LLM）
+                    _emit_via_callback(final_text, stream_callback)
                 self._remember_interaction(user_input, final_text)
                 Tracer.end_span(_span, steps=step + 1, total_tokens=self._token_usage.total_tokens)
                 return final_text
@@ -253,7 +266,8 @@ class Agent(ABC):
         # 超过最大步数仍未结束，做一次不带工具的收尾调用以获取最终答复
         logger.warning("[%s] 达到最大步数 %d，进行收尾调用", self.name, self.max_steps)
         if stream_callback is not None:
-            final_text = self._stream_final_answer(messages, None, stream_callback)
+            # 收尾是唯一一次调用，用真流式实时输出
+            final_text = self._stream_fallback(messages, stream_callback)
         else:
             final = self.llm.chat(messages, tools=None, tool_choice="none")
             if final.usage is not None:
@@ -263,30 +277,27 @@ class Agent(ABC):
         Tracer.end_span(_span, steps=self.max_steps, total_tokens=self._token_usage.total_tokens)
         return final_text
 
-    def _stream_final_answer(
+    def _stream_fallback(
         self,
         messages: list[dict[str, Any]],
-        tools,
         stream_callback: Callable[[str], None],
-        base: ChatResult | None = None,
     ) -> str:
         """
-        流式产出最终答复，实时回调文本片段
+        收尾流式调用（单次，不重复）：用 chat_stream 实时产出最终答复
+
+        仅在 max_steps 耗尽后的收尾调用中使用——此时只调一次 LLM，
+        不存在双调用问题。流式失败则回退非流式。
 
         Args:
             messages: 当前对话消息
-            tools: 工具 schema（收尾时传 None）
             stream_callback: 每段文本片段的回调
-            base: 已有的非流式结果（若 LLM 不支持流式，回退用它的 content）
 
         Returns:
             完整的最终答复文本
         """
         collected: list[str] = []
         try:
-            for chunk in self.llm.chat_stream(
-                messages, tools=tools, tool_choice="auto" if tools else "none"
-            ):
+            for chunk in self.llm.chat_stream(messages, tools=None, tool_choice="none"):
                 if chunk.delta_content:
                     collected.append(chunk.delta_content)
                     stream_callback(chunk.delta_content)
@@ -294,11 +305,8 @@ class Agent(ABC):
                     self._token_usage = self._token_usage.add(chunk.usage)
             return "".join(collected)
         except Exception as e:
-            logger.warning("[%s] 流式调用失败，回退非流式: %s", self.name, e)
-            if base is not None:
-                stream_callback(base.content)
-                return base.content
-            result = self.llm.chat(messages, tools=tools, tool_choice="auto" if tools else "none")
+            logger.warning("[%s] 收尾流式失败，回退非流式: %s", self.name, e)
+            result = self.llm.chat(messages, tools=None, tool_choice="none")
             if result.usage is not None:
                 self._token_usage = self._token_usage.add(result.usage)
             stream_callback(result.content)

@@ -89,8 +89,10 @@ class StreamingMockLLM(LLMClient):
         self._chunks = chunks
         self._usage = usage
         self.stream_calls = 0
+        self.chat_count = 0
 
     def chat(self, messages, tools=None, tool_choice="auto"):
+        self.chat_count += 1
         # 非流式：拼接所有 chunk 作为完整内容
         full = "".join(c for c in self._chunks if isinstance(c, str))
         return ChatResult(content=full, usage=self._usage)
@@ -196,3 +198,30 @@ class TestAgentStreamingAndTokens:
         assert result == "x"
         # 非流式 chat 被调用（不是 stream）
         assert llm.stream_calls == 0
+
+    def test_stream_direct_answer_calls_llm_once(self):
+        """
+        回归测试（防止 P0 双调用 bug 复发）：
+
+        stream_callback 存在 + 模型直接给最终答复时，
+        LLM 只应被调用一次（而非"先非流式拿结果，再流式重调"）。
+        """
+        llm = StreamingMockLLM(["最终答复"], usage=TokenUsage(10, 20, 30))
+
+        class A(Agent):
+            def __init__(self):
+                super().__init__("a", "a", llm_client=llm)
+
+            def receive(self, m):
+                pass
+
+        agent = A()
+        collected = []
+        agent.think("hi", stream_callback=lambda s: collected.append(s))
+
+        # 断言：只调用了 1 次 chat（修复前是 2 次：1次非流式 + 1次流式）
+        assert llm.chat_count == 1, f"应只调用1次 LLM，实际 {llm.chat_count} 次（双调用bug）"
+        # 流式回调仍被触发（模拟流式输出）
+        assert "".join(collected) == "最终答复"
+        # token 只累计一次（修复前会重复累计）
+        assert agent.get_token_usage().total_tokens == 30

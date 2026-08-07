@@ -32,7 +32,7 @@ pyagentkit run configs/team_example.yaml
 | 🤝 **能力驱动协作** | Agent 声明能力，协作策略按能力匹配（不依赖硬编码名字） |
 | 📋 **YAML 配置** | 声明式编排 Agent / 工具 / 会话 / 团队，零代码定制 |
 | 🖥️ **命令行工具** | `pyagentkit` 命令：交互对话 / 单次提问 / 跑配置 / 列工具 |
-| 🔒 **工程化** | 统一日志、异常边界、217 个单元测试守护 |
+| 🔒 **工程化** | 统一日志、异常边界、234 个单元测试守护 |
 
 ## 架构总览
 
@@ -298,13 +298,13 @@ asyncio.run(main())
 - **SDK**: zhipuai、python-dotenv、pyyaml
 - **向量记忆**: scikit-learn (TF-IDF) + numpy（本地零成本，可切 GLM embedding）
 - **异步**: asyncio（AsyncRouter）
-- **测试**: pytest（217 个用例）
+- **测试**: pytest（234 个用例）
 - **Python**: ≥ 3.10
 
 ## 测试
 
 ```bash
-pytest tests/                   # 运行全部 217 个测试
+pytest tests/                   # 运行全部 234 个测试
 pytest tests/test_team.py -v    # 运行单个模块
 ```
 
@@ -344,7 +344,7 @@ python mcp_demo.py              # MCP 工具集成
 3. **解耦** — 抽象层屏蔽具体实现；同步 Router 与异步 AsyncRouter 各司其职
 4. **可观测** — Trace 让每步耗时与 token 清晰可见，复杂协作不黑盒
 5. **安全** — AST 解析替代 eval、文件路径越界检测、异常边界
-6. **可测试** — 核心逻辑有 217 个单元测试守护，依赖可 mock
+6. **可测试** — 核心逻辑有 234 个单元测试守护，依赖可 mock
 
 ## 应用场景
 
