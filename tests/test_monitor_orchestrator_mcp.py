@@ -1,5 +1,5 @@
 """
-Monitor / Orchestrator / MCP 工具的基础测试
+Monitor / MCP 工具的基础测试
 
 这三个模块之前零测试覆盖。补核心路径测试，确保它们作为公开 API 可用。
 """
@@ -15,9 +15,7 @@ from core.mcp_tools import (
     MCPTool,
     MCPToolRegistry,
 )
-from core.message import Message
 from core.monitor import AgentMonitor
-from core.orchestrator import Orchestrator
 from core.router import Router
 
 # --------------------------------------------------------------------
@@ -80,56 +78,6 @@ class TestAgentMonitor:
         monitor.print_real_time_status()
         captured = capsys.readouterr()
         assert "监控未启动" in captured.out
-
-
-# --------------------------------------------------------------------
-# Orchestrator
-# --------------------------------------------------------------------
-
-
-class TestOrchestrator:
-    def test_add_remove_agent(self):
-        router = Router()
-        orch = Orchestrator(router)
-        agent = StubAgent("a1")
-        orch.add_agent(agent)
-        assert "a1" in router.list_agents()
-        orch.remove_agent("a1")
-        assert "a1" not in router.list_agents()
-
-    def test_get_router(self):
-        router = Router()
-        orch = Orchestrator(router)
-        assert orch.get_router() is router
-
-    def test_get_stats(self):
-        router = Router()
-        orch = Orchestrator(router)
-        stats = orch.get_orchestrator_stats()
-        assert "router_stats" in stats
-        assert "thread_pool_max_workers" in stats
-
-    def test_broadcast_message(self):
-        router = Router()
-        orch = Orchestrator(router)
-        a = StubAgent("a")
-        b = StubAgent("b")
-        orch.add_agent(a)
-        orch.add_agent(b)
-        results = orch.broadcast_message(Message("a", "all", "news"))
-        assert results["b"] is True
-
-    def test_sequential_execution_routes_to_agents(self):
-        """标注 deprecated 的 sequential_execution 仍应正常工作"""
-        router = Router()
-        orch = Orchestrator(router)
-        a = StubAgent("a")
-        b = StubAgent("b")
-        orch.add_agent(a)
-        orch.add_agent(b)
-        orch.sequential_execution(["a", "b"], Message("ext", "a", "msg"))
-        assert len(a.received) == 1
-        assert len(b.received) == 1
 
 
 # --------------------------------------------------------------------

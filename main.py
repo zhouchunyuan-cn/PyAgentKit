@@ -19,7 +19,7 @@ except ImportError:
     # 未安装 python-dotenv 时静默跳过，依赖系统环境变量
     pass
 
-from core import Router, Message, Orchestrator
+from core import Router, Message
 from core.llm import GLMClient
 from core.logging_config import setup_logging
 from core.monitor import AgentMonitor
@@ -63,7 +63,6 @@ def main():
 
     # 创建核心组件
     router = Router()
-    orchestrator = Orchestrator(router)
     monitor = AgentMonitor(router)
     collaboration_manager = DynamicCollaborationManager(router)
 
@@ -73,11 +72,11 @@ def main():
     writer_agent = WriterAgent(llm_client=llm_client)
     analyzer_agent = AnalyzerAgent(llm_client=llm_client)
 
-    # 通过调度器注册Agents
-    orchestrator.add_agent(user_agent)
-    orchestrator.add_agent(research_agent)
-    orchestrator.add_agent(writer_agent)
-    orchestrator.add_agent(analyzer_agent)
+    # 注册 Agents 到路由器
+    router.register_agent(user_agent)
+    router.register_agent(research_agent)
+    router.register_agent(writer_agent)
+    router.register_agent(analyzer_agent)
 
     # 创建并注册MCP工具
     file_system_tool = MCPTool(

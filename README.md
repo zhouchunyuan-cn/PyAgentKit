@@ -51,7 +51,7 @@ pyagentkit run configs/team_example.yaml
 │        (chat/stream)  (calculator…)   (KV/向量/会话)                │
 ├──────────────────────────────────────────────────────────────────┤
 │  Router ◄──同步──► Agents      AsyncRouter ◄──异步队列──► Agents   │
-│  Collaboration(能力匹配)   Orchestrator(调度)   Monitor(监控)       │
+│  Collaboration(能力匹配)   Monitor(监控)                              │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -281,7 +281,6 @@ asyncio.run(main())
 | `core/session.py` | 多轮对话会话管理 |
 | `core/router.py` | 同步消息路由（点对点/广播/异常边界） |
 | `core/async_router.py` | 异步路由（asyncio.Queue 解耦，根治栈溢出） |
-| `core/orchestrator.py` | 任务调度（顺序/并发） |
 | `core/collaboration.py` | 能力驱动的协作策略 |
 | `core/team.py` | 团队协作（Sequential / Hierarchical 流程） |
 | `core/trace.py` | 执行追踪（每步耗时与 token） |

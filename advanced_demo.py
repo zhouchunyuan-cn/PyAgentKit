@@ -4,7 +4,7 @@ PyAgentKit 高级多智能体对话系统演示
 展示更复杂的多智能体协作场景
 """
 
-from core import Router, Message, Orchestrator
+from core import Router, Message
 from core.mcp_tools import MCPTool
 from agents import UserAgent, ResearchAgent, WriterAgent, AnalyzerAgent
 
@@ -18,19 +18,18 @@ def main():
     
     # 创建核心组件
     router = Router()
-    orchestrator = Orchestrator(router)
-    
+
     # 创建Agents
     user_agent = UserAgent()
     research_agent = ResearchAgent()
     writer_agent = WriterAgent()
     analyzer_agent = AnalyzerAgent()
     
-    # 通过调度器注册Agents
-    orchestrator.add_agent(user_agent)
-    orchestrator.add_agent(research_agent)
-    orchestrator.add_agent(writer_agent)
-    orchestrator.add_agent(analyzer_agent)
+    # 注册 Agents 到路由器
+    router.register_agent(user_agent)
+    router.register_agent(research_agent)
+    router.register_agent(writer_agent)
+    router.register_agent(analyzer_agent)
     
     # 创建并注册MCP工具
     file_system_tool = MCPTool(

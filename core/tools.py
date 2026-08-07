@@ -521,7 +521,7 @@ class DatabaseTool(Tool):
         # 若每次 run 都新建连接，建表后插入会找不到表。
         import sqlite3
 
-        # check_same_thread=False 允许在 Orchestrator 的线程池中复用
+        # check_same_thread=False 允许在多线程环境（如 AsyncRouter）中复用
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = __import__("threading").Lock()
