@@ -15,12 +15,12 @@
 | 章节 | 主题 | 核心问题 |
 |------|------|----------|
 | [01 快速开始](01_快速开始.md) | 安装与第一个 Agent | 怎么跑起来 |
-| [02 Agent 与 ReAct 循环](02_Agent与ReAct循环.md) | ⭐ think() 推理循环 | Agent 怎么"思考" |
+| [02 Agent 与 ReAct 循环](02_Agent与ReAct循环.md) | ⭐ think() / ReactEngine / 钩子 | Agent 怎么"思考" |
 | [03 工具系统](03_工具系统.md) | Tool / 内置工具 / 安全 | Agent 怎么"动手" |
-| [04 记忆体系](04_记忆体系.md) | KV / 向量 / 统一记忆 | Agent 怎么"记住" |
+| [04 记忆体系](04_记忆体系.md) | KV / 向量 / 统一记忆 / 持久化 | Agent 怎么"记住" |
 | [05 消息路由](05_消息路由.md) | Router / AsyncRouter | Agent 间怎么"对话" |
-| [06 团队协作](06_团队协作.md) | Team / Process / Leader | 多 Agent 怎么"分工" |
-| [07 异步流式与可观测](07_异步流式与可观测.md) | 流式 / Token / Tracer | 怎么"看见"执行过程 |
+| [06 团队协作](06_团队协作.md) | Team / Process / Leader / 流式 | 多 Agent 怎么"分工" |
+| [07 异步流式与可观测](07_异步流式与可观测.md) | 流式 / Token / 钩子 / Tracer | 怎么"看见"执行过程 |
 | [08 配置驱动与 CLI](08_配置驱动与CLI.md) | YAML / ConfigLoader | 怎么"零代码"编排 |
 | [实战：研究报告生成器](09_实战_研究报告生成器.md) | ⭐ 端到端项目 | 把所有能力串起来用 |
 

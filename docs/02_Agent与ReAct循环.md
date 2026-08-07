@@ -145,7 +145,7 @@ def on_chunk(text):
 agent.think("介绍量子纠缠", stream_callback=on_chunk)
 ```
 
-机制：当模型给出最终答复时（情况 A），用 `chat_stream()` 重新流式请求，每收到一段文本就回调一次。工具调用步骤仍用非流式（流式只用于最终输出）。
+机制：当模型给出最终答复时（无工具调用），直接用已拿到的 `result.content`，通过 `_emit_via_callback` 按段回调（**不重复调用 LLM**，避免双倍 token 消耗）。仅在 `max_steps` 耗尽的收尾调用中才使用真正的 `chat_stream` 流式请求。工具调用步骤始终用非流式（需解析结构化的 tool_calls）。
 
 ## 2.7 Token 统计
 
@@ -198,7 +198,60 @@ print(agent.think("你好"))   # 直接调用 think
 
 进阶：挂工具、注入记忆、声明能力，都在 `__init__` 里完成。
 
-## 2.10 与其他模块的关系
+## 2.10 ReactEngine——推理引擎（内部架构）
+
+`think()` 的 ReAct 循环逻辑实际由 **ReactEngine**（`core/react_engine.py`）承载。Agent 通过委托调用：
+
+```python
+# Agent 内部
+self._engine = ReactEngine(self)
+
+def think(self, ...):
+    return self._engine.think(...)   # 一行委托
+```
+
+这样设计的好处：Agent 基类聚焦"身份 + 通信 + 工具"，推理细节内聚在 engine。后续的错误恢复、token 统计、钩子触发都在 engine 一处维护。
+
+## 2.11 错误恢复——优雅降级
+
+当 LLM 调用失败时（GLMClient 内部重试已耗尽），`think()` 不会直接崩溃：
+
+- **第一步就失败**（无任何上下文）：抛出带说明的 `RuntimeError`
+- **循环中途失败**（已有工具结果）：尝试一次无工具的降级调用，基于已有信息给出"尽力而为"的答复
+- **降级也失败**：抛错
+
+这让 Agent 对网络抖动等瞬时故障更有韧性。
+
+## 2.12 生命周期钩子
+
+通过 `AgentHooks` 在 ReAct 过程的关键节点注入逻辑，无需子类化：
+
+```python
+from core import Agent, AgentHooks
+
+hooks = AgentHooks(
+    on_think_start=lambda agent, inp: print(f"开始思考：{inp}"),
+    on_tool_call=lambda agent, name, args, res: print(f"调用了 {name}"),
+    on_think_end=lambda agent, resp: print(f"完成：{resp[:20]}"),
+    on_error=lambda agent, err, ctx: print(f"出错：{err}"),
+)
+agent = MyAgent(hooks=hooks)
+```
+
+`on_think_start` 返回 `False` 可**中止** think（用于 human-in-the-loop 审批）。钩子异常不影响主流程。
+
+## 2.13 记忆持久化
+
+默认 Agent 的记忆是纯内存的（重启丢失）。需要持久化时：
+
+```python
+agent.enable_persistence()              # 默认 memory_{agent_id}.json
+agent.enable_persistence("my_mem.json") # 自定义路径
+```
+
+启用后长期记忆写入文件，重启恢复。多个 Agent 各自的文件互不干扰。
+
+## 2.14 与其他模块的关系
 
 ```
 Agent.think()
