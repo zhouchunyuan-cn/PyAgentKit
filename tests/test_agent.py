@@ -414,3 +414,111 @@ class TestPersistence:
         a2.remember("k", "from_a2", memory_type="long")
         assert a1.recall("k") == "from_a1"
         assert a2.recall("k") == "from_a2"
+
+
+# --------------------------------------------------------------------
+# 生命周期钩子
+# --------------------------------------------------------------------
+
+
+class TestHooks:
+    def test_on_think_start_and_end(self):
+        """on_think_start 和 on_think_end 被触发"""
+        from core.hooks import AgentHooks
+
+        events = []
+        llm = ScriptedLLM([ChatResult(content="答复", finish_reason="stop")])
+
+        class A(Agent):
+            def __init__(self):
+                super().__init__(
+                    "a", "助手", llm_client=llm,
+                    hooks=AgentHooks(
+                        on_think_start=lambda ag, inp: events.append(("start", inp)),
+                        on_think_end=lambda ag, resp: events.append(("end", resp)),
+                    ),
+                )
+
+            def receive(self, m):
+                pass
+
+        a = A()
+        a.think("hello")
+        assert ("start", "hello") in events
+        assert ("end", "答复") in events
+
+    def test_on_tool_call_hook(self):
+        """on_tool_call 在工具执行后被触发"""
+        tool_calls_made = []
+        llm = ScriptedLLM([
+            ChatResult(
+                content="",
+                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResult(content="done", finish_reason="stop"),
+        ])
+
+        class A(Agent):
+            def __init__(self):
+                from core.hooks import AgentHooks
+
+                super().__init__(
+                    "a", "助手", llm_client=llm,
+                    hooks=AgentHooks(
+                        on_tool_call=lambda ag, name, args, res: tool_calls_made.append(name),
+                    ),
+                )
+
+            def receive(self, m):
+                pass
+
+        a = A()
+        a.tool_registry.register(CalculatorTool())
+        a.think("计算")
+        assert "calculator" in tool_calls_made
+
+    def test_on_think_start_can_abort(self):
+        """on_think_start 返回 False 可中止 think"""
+        from core.hooks import AgentHooks
+
+        llm = ScriptedLLM([ChatResult(content="不应被调用")])
+
+        class A(Agent):
+            def __init__(self):
+                super().__init__(
+                    "a", "助手", llm_client=llm,
+                    hooks=AgentHooks(on_think_start=lambda ag, inp: False),
+                )
+
+            def receive(self, m):
+                pass
+
+        a = A()
+        result = a.think("hello")
+        # 中止返回空字符串，LLM 未被调用
+        assert result == ""
+        assert llm.chat_count == 0
+
+    def test_hook_exception_does_not_break(self):
+        """钩子自身抛异常不影响主流程"""
+        from core.hooks import AgentHooks
+
+        llm = ScriptedLLM([ChatResult(content="ok", finish_reason="stop")])
+
+        class A(Agent):
+            def __init__(self):
+                super().__init__(
+                    "a", "助手", llm_client=llm,
+                    hooks=AgentHooks(
+                        on_think_end=lambda ag, r: 1 / 0,  # 故意报错
+                    ),
+                )
+
+            def receive(self, m):
+                pass
+
+        a = A()
+        result = a.think("hi")
+        # 钩子异常不影响结果
+        assert result == "ok"

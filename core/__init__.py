@@ -17,6 +17,7 @@ from .collaboration import (
     CollaborationStrategy,
     DynamicCollaborationManager,
 )
+from .hooks import AgentHooks
 from .llm import ChatResult, GLMClient, LLMClient, StreamChunk, TokenUsage, ToolCall
 from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
 from .memory import Memory
@@ -39,6 +40,7 @@ from .vector_memory import Embedder, GLMEmbedder, LocalTfidfEmbedder, VectorMemo
 
 __all__ = [
     "Agent",
+    "AgentHooks",
     "Message",
     "Router",
     "Memory",

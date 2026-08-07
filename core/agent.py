@@ -14,6 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from .hooks import AgentHooks
 from .llm import LLMClient, TokenUsage
 from .memory import Memory
 from .memory_manager import MemoryManager
@@ -52,6 +53,7 @@ class Agent(ABC):
         max_steps: int = DEFAULT_MAX_STEPS,
         capabilities: list[str] | None = None,
         tags: list[str] | None = None,
+        hooks: AgentHooks | None = None,
     ):
         """
         初始化Agent
@@ -89,6 +91,8 @@ class Agent(ABC):
         self.tools: dict[str, Any] = self.tool_registry.tools
         # ReAct 推理引擎（委托模式：think 等推理逻辑内聚于此）
         self._engine = ReactEngine(self)
+        # 生命周期钩子（可选，默认无钩子）
+        self.hooks: AgentHooks = hooks or AgentHooks()
 
     # ------------------------------------------------------------------
     # 身份与能力

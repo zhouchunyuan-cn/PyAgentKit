@@ -95,6 +95,15 @@ class ReactEngine:
                 "请在初始化时传入 llm_client。"
             )
 
+        # on_think_start 钩子（返回 False 可中止，用于 HITL 审批）
+        if agent.hooks.on_think_start is not None:
+            try:
+                if agent.hooks.on_think_start(agent, user_input) is False:
+                    logger.info("[%s] think 被 on_think_start 钩子中止", agent.name)
+                    return ""
+            except Exception as e:
+                logger.warning("[%s] on_think_start 钩子异常: %s", agent.name, e)
+
         # 1. 组装初始消息列表
         messages = self._build_initial_messages(user_input, context_messages)
 
@@ -119,6 +128,8 @@ class ReactEngine:
             except Exception as e:
                 # LLM 调用失败（GLMClient 内部重试已耗尽）：尝试优雅降级
                 logger.warning("[%s] 第 %d 步 LLM 调用失败: %s", agent.name, step + 1, e)
+                # on_error 钩子
+                self._fire_hook("on_error", agent, e, f"第{step + 1}步 LLM 调用失败")
                 partial = self._recover_from_llm_error(
                     messages, user_input, stream_callback, _span, step, tools
                 )
@@ -132,6 +143,9 @@ class ReactEngine:
             if result.usage is not None:
                 self._token_usage = self._token_usage.add(result.usage)
 
+            # on_llm_response 钩子
+            self._fire_hook("on_llm_response", agent, result, step + 1)
+
             if not result.tool_calls:
                 # 模型给出最终答复（直接用本次结果，不再重复调用 LLM）
                 logger.debug("[%s] ReAct 完成，步数=%d", agent.name, step + 1)
@@ -140,6 +154,8 @@ class ReactEngine:
                     _emit_via_callback(final_text, stream_callback)
                 self._remember_interaction(user_input, final_text)
                 Tracer.end_span(_span, steps=step + 1, total_tokens=self._token_usage.total_tokens)
+                # on_think_end 钩子
+                self._fire_hook("on_think_end", agent, final_text)
                 return final_text
 
             # 把助手的工具调用请求加入对话历史
@@ -164,6 +180,8 @@ class ReactEngine:
             # 逐个执行工具，把结果作为 tool 消息回传
             for tc in result.tool_calls:
                 tool_result = self._execute_tool_safe(tc.name, tc.arguments)
+                # on_tool_call 钩子
+                self._fire_hook("on_tool_call", agent, tc.name, tc.arguments, tool_result)
                 # 工具结果存入短期记忆，便于后续步骤引用
                 agent.remember(f"tool:{tc.name}:{tc.id}", tool_result, memory_type="short")
                 messages.append(
@@ -185,11 +203,28 @@ class ReactEngine:
             final_text = final.content
         self._remember_interaction(user_input, final_text)
         Tracer.end_span(_span, steps=agent.max_steps, total_tokens=self._token_usage.total_tokens)
+        # on_think_end 钩子
+        self._fire_hook("on_think_end", agent, final_text)
         return final_text
 
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
+
+    def _fire_hook(self, hook_name: str, *args, **kwargs) -> None:
+        """
+        安全触发生命周期钩子
+
+        钩子未设置或抛异常都不影响主流程。
+        """
+        agent = self.agent
+        hook = getattr(agent.hooks, hook_name, None)
+        if hook is None:
+            return
+        try:
+            hook(*args, **kwargs)
+        except Exception as e:
+            logger.warning("[%s] %s 钩子异常: %s", agent.name, hook_name, e)
 
     def _recover_from_llm_error(
         self,
