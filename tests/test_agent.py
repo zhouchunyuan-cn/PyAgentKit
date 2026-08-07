@@ -296,3 +296,68 @@ class TestToolManagement:
         agent.add_tool("calc", tool)
         assert agent.get_tool("calculator") is tool
         assert agent.get_tool("missing") is None
+
+
+# --------------------------------------------------------------------
+# 错误恢复
+# --------------------------------------------------------------------
+
+
+class FlakyLLM(LLMClient):
+    """按预设行为失败的 Mock LLM：可指定哪一步抛异常"""
+
+    def __init__(self, behaviors: list):
+        """behaviors: 每次 chat 的行为，("ok", result) 或 ("raise", exc)"""
+        self._behaviors = list(behaviors)
+        self._index = 0
+
+    def chat(self, messages, tools=None, tool_choice="auto"):
+        if self._index >= len(self._behaviors):
+            return ChatResult(content="(end)")
+        action, payload = self._behaviors[self._index]
+        self._index += 1
+        if action == "raise":
+            raise payload
+        return payload
+
+
+class TestErrorRecovery:
+    def test_first_step_failure_raises(self):
+        """第一步就失败（无上下文），应抛出带说明的 RuntimeError"""
+        llm = FlakyLLM([("raise", ConnectionError("网络断了"))])
+        agent = make_agent(llm)
+        with pytest.raises(RuntimeError, match="think.*失败"):
+            agent.think("hello")
+
+    def test_mid_loop_failure_recovers(self):
+        """循环中途失败（已有工具结果），应降级返回尽力答复"""
+        llm = FlakyLLM([
+            ("ok", ChatResult(
+                content="",
+                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})],
+                finish_reason="tool_calls",
+            )),
+            ("raise", ConnectionError("中途断了")),  # 第二步失败
+            ("ok", ChatResult(content="基于已有信息的答复", finish_reason="stop")),  # 降级成功
+        ])
+        agent = make_agent(llm)
+        agent.tool_registry.register(CalculatorTool())
+        result = agent.think("计算")
+        # 应回到降级答复而非抛错
+        assert "答复" in result
+
+    def test_recovery_failure_still_raises(self):
+        """降级调用也失败时，最终抛错"""
+        llm = FlakyLLM([
+            ("ok", ChatResult(
+                content="",
+                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})],
+                finish_reason="tool_calls",
+            )),
+            ("raise", ConnectionError("第一次断")),
+            ("raise", ConnectionError("降级也断")),
+        ])
+        agent = make_agent(llm)
+        agent.tool_registry.register(CalculatorTool())
+        with pytest.raises(RuntimeError, match="失败"):
+            agent.think("计算")

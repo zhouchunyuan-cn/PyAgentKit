@@ -112,7 +112,22 @@ class ReactEngine:
 
         # 2. ReAct 循环
         for step in range(agent.max_steps):
-            result = agent.llm.chat(messages, tools=tools, tool_choice="auto" if tools else "none")
+            try:
+                result = agent.llm.chat(
+                    messages, tools=tools, tool_choice="auto" if tools else "none"
+                )
+            except Exception as e:
+                # LLM 调用失败（GLMClient 内部重试已耗尽）：尝试优雅降级
+                logger.warning("[%s] 第 %d 步 LLM 调用失败: %s", agent.name, step + 1, e)
+                partial = self._recover_from_llm_error(
+                    messages, user_input, stream_callback, _span, step, tools
+                )
+                if partial is not None:
+                    return partial
+                # 第一步就失败且无法降级，抛出带上下文的错误
+                raise RuntimeError(
+                    f"Agent '{agent.name}' think() 失败（第 {step + 1} 步）：{e}"
+                ) from e
             # 累计 token 用量
             if result.usage is not None:
                 self._token_usage = self._token_usage.add(result.usage)
@@ -175,6 +190,47 @@ class ReactEngine:
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
+
+    def _recover_from_llm_error(
+        self,
+        messages: list[dict[str, Any]],
+        user_input: str,
+        stream_callback: Callable[[str], None] | None,
+        _span: Any,
+        failed_step: int,
+        tools: Any,
+    ) -> str | None:
+        """
+        LLM 调用失败时的优雅降级
+
+        策略：如果之前已有工具执行结果（messages 里含 tool 消息），
+        尝试做一次无工具的收尾调用，基于已有信息给出"尽力而为"的答复。
+        如果第一步就失败（无任何上下文），返回 None 让调用方抛错。
+
+        Returns:
+            降级答复文本；None 表示无法降级
+        """
+        agent = self.agent
+        has_context = any(m.get("role") == "tool" for m in messages)
+        if not has_context:
+            return None
+
+        logger.info("[%s] 尝试基于已有上下文降级回复", agent.name)
+        try:
+            final = agent.llm.chat(messages, tools=None, tool_choice="none")
+            if final.usage is not None:
+                self._token_usage = self._token_usage.add(final.usage)
+            final_text = final.content
+            if stream_callback is not None and final_text:
+                _emit_via_callback(final_text, stream_callback)
+            self._remember_interaction(user_input, final_text)
+            Tracer.end_span(
+                _span, steps=failed_step + 1, total_tokens=self._token_usage.total_tokens, recovered=True
+            )
+            return final_text
+        except Exception:
+            # 降级调用也失败，放弃
+            return None
 
     def _stream_fallback(
         self,
