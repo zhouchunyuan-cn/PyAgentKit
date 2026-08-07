@@ -320,3 +320,44 @@ class TestTeam:
         assert s["has_leader"] is True
         assert s["process"] == "sequential"
         assert s["task_count"] == 1
+
+
+# --------------------------------------------------------------------
+# Team 流式回调传播
+# --------------------------------------------------------------------
+
+
+class TestTeamStreamCallback:
+    def test_sequential_stream_callback_on_last_member(self):
+        """Sequential 流式回调应传给最后一个成员（它产出最终结果）"""
+        members = [
+            make_agent("a1", "一", ["x"], MockLLM(responses="第一步")),
+            make_agent("a2", "二", ["x"], MockLLM(responses="最终产出")),
+        ]
+        collected = []
+        team = Team(name="T", members=members, process=SequentialProcess())
+        result = team.run("任务", stream_callback=lambda s: collected.append(s))
+        assert result == "最终产出"
+        # 流式回调被触发
+        assert len(collected) > 0
+
+    def test_hierarchical_stream_callback_on_synthesis(self):
+        """Hierarchical 流式回调应传给 Leader 汇总步骤"""
+        plan = json.dumps([{"subtask": "干活", "capability": "work"}])
+        leader = make_agent("L", "经理", ["plan"], MockLLM(plan=plan))
+        worker = make_agent("w", "工人", ["work"], MockLLM(responses="成果"))
+        collected = []
+        team = Team(
+            name="T", members=[worker], process=HierarchicalProcess(), leader=leader
+        )
+        result = team.run("任务", stream_callback=lambda s: collected.append(s))
+        assert result == "最终汇总结果"
+        # Leader 汇总的流式输出被回调
+        assert len(collected) > 0
+
+    def test_no_callback_still_works(self):
+        """不传 stream_callback 时行为不变"""
+        members = [make_agent("a1", "一", ["x"], MockLLM(responses="产出"))]
+        team = Team(name="T", members=members, process=SequentialProcess())
+        result = team.run("任务")
+        assert result == "产出"

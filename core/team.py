@@ -23,6 +23,7 @@
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -124,6 +125,7 @@ class Process(ABC):
         task: Task,
         members: list[Agent],
         leader: Agent | None = None,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> str:
         """
         执行团队任务
@@ -132,6 +134,7 @@ class Process(ABC):
             task: 团队任务（含共享上下文）
             members: 团队成员列表
             leader: 团队领导（Hierarchical 流程必需，Sequential 可为 None）
+            stream_callback: 流式回调；传入后最终结果流式产出
 
         Returns:
             最终结果文本
@@ -154,13 +157,20 @@ class SequentialProcess(Process):
 
     name = "sequential"
 
-    def execute(self, task: Task, members: list[Agent], leader: Agent | None = None) -> str:
+    def execute(
+        self,
+        task: Task,
+        members: list[Agent],
+        leader: Agent | None = None,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> str:
         if not members:
             raise ValueError("SequentialProcess 需要至少一个成员")
 
         ctx = task.context
         ctx.record_step("sequential_start", f"成员顺序: {[m.agent_id for m in members]}")
 
+        last_idx = len(members) - 1
         for idx, member in enumerate(members):
             self._ensure_can_think(member)
 
@@ -172,7 +182,9 @@ class SequentialProcess(Process):
             span = Tracer.start_span(
                 f"sequential:{member.agent_id}", member=member.agent_id, step=idx + 1
             )
-            output = member.think(user_input)
+            # 最后一个成员的产出是最终结果，传入 stream_callback 流式输出
+            cb = stream_callback if idx == last_idx else None
+            output = member.think(user_input, stream_callback=cb)
             Tracer.end_span(span)
             ctx.add_output(member.agent_id, output)
             ctx.record_step("member_done", {"agent": member.agent_id, "index": idx})
@@ -244,7 +256,13 @@ class HierarchicalProcess(Process):
         self.max_subtasks = max_subtasks
         self.max_steps = max_steps
 
-    def execute(self, task: Task, members: list[Agent], leader: Agent | None = None) -> str:
+    def execute(
+        self,
+        task: Task,
+        members: list[Agent],
+        leader: Agent | None = None,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> str:
         if leader is None:
             raise ValueError("HierarchicalProcess 需要 leader")
         self._ensure_can_think(leader)
@@ -305,7 +323,7 @@ class HierarchicalProcess(Process):
         synthesis_input = self._SYNTHESIS_PROMPT.format(
             task=task.description, outputs=ctx.get_all_outputs()
         )
-        final = leader.think(synthesis_input, use_tools=False)
+        final = leader.think(synthesis_input, use_tools=False, stream_callback=stream_callback)
         ctx.record_step("synthesis_done")
         return final
 
@@ -439,7 +457,11 @@ class Team:
         self.members = [m for m in self.members if m.agent_id != agent_id]
         return len(self.members) < before
 
-    def run(self, task_description: str) -> str:
+    def run(
+        self,
+        task_description: str,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> str:
         """
         执行团队任务
 
@@ -447,6 +469,8 @@ class Team:
 
         Args:
             task_description: 任务描述（团队共同目标）
+            stream_callback: 流式回调；传入后最终结果流式产出（Leader 汇总
+                             或 Sequential 最后一个成员的输出实时回调）
 
         Returns:
             最终结果文本
@@ -472,7 +496,7 @@ class Team:
             _started_trace = Tracer.start_trace(f"team:{self.name}:{task_description[:30]}")
 
         try:
-            result = self.process.execute(task, self.members, self.leader)
+            result = self.process.execute(task, self.members, self.leader, stream_callback)
         finally:
             if _started_trace is not None:
                 Tracer.end_trace()
