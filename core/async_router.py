@@ -62,7 +62,9 @@ class AsyncRouter:
         # 队列与消费任务在 start() 中创建（需要事件循环）
         self._queue: asyncio.Queue | None = None
         self._consumer_tasks: list[asyncio.Task] = []
+        self._pending_tasks: set[asyncio.Task] = set()  # 同步桥的入队 task（防 GC）
         self._running = False
+        self._loop: asyncio.AbstractEventLoop | None = None  # start() 时保存
         # drain 的等待条件：队列空且无在处理消息时通知
         self._idle_event: asyncio.Event | None = None
         self._in_flight = 0
@@ -101,6 +103,7 @@ class AsyncRouter:
         """启动后台消费协程（必须在事件循环中调用）"""
         if self._running:
             return
+        self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue()
         self._idle_event = asyncio.Event()
         self._idle_event.set()  # 初始无消息，视为空闲
@@ -141,24 +144,22 @@ class AsyncRouter:
         同步路由入口（兼容现有 Agent.send 的调用）
 
         AsyncRouter 是异步的，但现有 Agent.send 是同步的、会调用
-        router.route_message。这里提供同步桥接：把消息投递到队列。
-        若在事件循环线程中，用 call_soon 异步入队；否则直接 put_nowait。
-
-        这样同步 Agent（receive 内部用 self.send）在 AsyncRouter 下也能工作，
-        且不会同步递归——消息入队后立即返回，实际处理在消费协程。
+        router.route_message。这里提供线程安全的同步桥接：
+        用 call_soon_threadsafe 在事件循环线程中调度入队（线程安全 + 防 GC）。
         """
-        if self._queue is None:
+        if self._queue is None or self._loop is None:
             raise RuntimeError("AsyncRouter 未启动，请先 await router.start()")
         self.message_history.append(message)
         self.stats["messages_sent"] += 1
-        try:
-            loop = asyncio.get_running_loop()
-            # 在事件循环线程内：调度异步入队
-            loop.create_task(self._put(message))
-        except RuntimeError:
-            # 无运行中的事件循环（不应发生于 AsyncRouter 场景），直接入队
-            self._queue.put_nowait(message)
+        # 线程安全地调度入队（无论从事件循环线程还是 executor 线程调用都安全）
+        self._loop.call_soon_threadsafe(self._schedule_put, message)
         return True
+
+    def _schedule_put(self, message: Message) -> None:
+        """在事件循环线程中调度异步入队（保留 task 引用防 GC）"""
+        task = asyncio.ensure_future(self._put(message))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
     async def _put(self, message: Message) -> None:
         """异步入队辅助"""
