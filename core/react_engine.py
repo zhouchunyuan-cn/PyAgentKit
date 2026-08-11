@@ -152,7 +152,9 @@ class ReactEngine:
                 final_text = result.content
                 if stream_callback is not None and final_text:
                     _emit_via_callback(final_text, stream_callback)
-                self._remember_interaction(user_input, final_text)
+                self._remember_interaction(
+                    user_input, final_text, caller_manages_history=context_messages is not None
+                )
                 Tracer.end_span(_span, steps=step + 1, total_tokens=self._token_usage.total_tokens)
                 # on_think_end 钩子
                 self._fire_hook("on_think_end", agent, final_text)
@@ -201,7 +203,9 @@ class ReactEngine:
             if final.usage is not None:
                 self._token_usage = self._token_usage.add(final.usage)
             final_text = final.content
-        self._remember_interaction(user_input, final_text)
+        self._remember_interaction(
+            user_input, final_text, caller_manages_history=context_messages is not None
+        )
         Tracer.end_span(_span, steps=agent.max_steps, total_tokens=self._token_usage.total_tokens)
         # on_think_end 钩子
         self._fire_hook("on_think_end", agent, final_text)
@@ -328,17 +332,23 @@ class ReactEngine:
             logger.warning("[%s] 工具 '%s' 执行失败: %s", agent.name, tool_name, e)
             return {"error": f"工具 '{tool_name}' 执行失败: {str(e)}"}
 
-    def _remember_interaction(self, user_input: str, response: str) -> None:
+    def _remember_interaction(
+        self, user_input: str, response: str, caller_manages_history: bool = False
+    ) -> None:
         """
         将一次完整交互存入记忆
 
-        - 记录到会话历史（brain 的会话通道），使后续多轮对话能延续上下文
-        - 同时保留一份 KV 短期记忆（向后兼容）
+        - 若 caller_manages_history=False（think 直接调用，无 Session）：
+          记录到 brain 的会话通道，使后续 think 能延续上下文
+        - 若 caller_manages_history=True（Session 调用，已通过 context_messages 传入历史）：
+          跳过会话通道，避免历史重复
+        - 两种情况都保留 KV 短期记忆快照（向后兼容）
         """
         agent = self.agent
-        # 会话通道：记录本轮，使 build_context 下次能带上
-        agent.brain.record_turn("user", user_input)
-        agent.brain.record_turn("assistant", response)
+        if not caller_manages_history:
+            # 会话通道：记录本轮（仅在无外部 Session 管理历史时）
+            agent.brain.record_turn("user", user_input)
+            agent.brain.record_turn("assistant", response)
         # KV 通道：保留交互快照（向后兼容）
         agent.brain.remember(
             f"interaction:{len(agent.memory.list_short_term_memory())}",

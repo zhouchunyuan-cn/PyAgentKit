@@ -110,6 +110,17 @@ class TestThinkDirectAnswer:
         assert conv[1]["role"] == "assistant"
         assert conv[1]["content"] == "答复"
 
+    def test_no_brain_history_when_context_messages_provided(self):
+        """传 context_messages 时（Session 场景），brain 会话通道不应重复记录"""
+        llm = ScriptedLLM([ChatResult(content="回复", finish_reason="stop")])
+        agent = make_agent(llm)
+        # 模拟 Session 调用：传入已有的 context_messages
+        prior_context = [{"role": "user", "content": "上轮问题"}]
+        agent.think("本轮问题", context_messages=prior_context)
+        # brain 会话通道应为空（由 Session 管理历史）
+        conv = agent.brain.get_conversation()
+        assert len(conv) == 0
+
 
 # --------------------------------------------------------------------
 # think() 工具调用循环
