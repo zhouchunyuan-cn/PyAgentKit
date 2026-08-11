@@ -585,10 +585,9 @@ class ToolRegistry:
 
     def __init__(self):
         self.tools: dict[str, Tool] = {}
-        # 添加对MCP工具的支持
-        self.mcp_registry = MCPToolRegistry()
-        self.mcp_integration_tool = ConcreteMCPIntegrationTool(self.mcp_registry)
-        self.register(self.mcp_integration_tool)
+        # MCP 支持：懒初始化（仅在 register_mcp_tool 首次调用时创建）
+        self.mcp_registry: MCPToolRegistry | None = None
+        self.mcp_integration_tool: ConcreteMCPIntegrationTool | None = None
 
     def register(self, tool: Tool) -> None:
         """
@@ -650,14 +649,15 @@ class ToolRegistry:
             工具名称和描述的字典
         """
         tools = {name: tool.description for name, tool in self.tools.items()}
-        # 添加MCP工具
-        mcp_tools = self.mcp_registry.list_tools()
-        tools.update({f"mcp:{name}": desc for name, desc in mcp_tools.items()})
+        # 添加MCP工具（仅在已初始化时）
+        if self.mcp_registry is not None:
+            mcp_tools = self.mcp_registry.list_tools()
+            tools.update({f"mcp:{name}": desc for name, desc in mcp_tools.items()})
         return tools
 
     def register_mcp_tool(self, mcp_tool) -> bool:
         """
-        注册MCP工具
+        注册MCP工具（首次调用时懒初始化 MCP 注册表）
 
         Args:
             mcp_tool: MCP工具实例
@@ -665,6 +665,7 @@ class ToolRegistry:
         Returns:
             是否注册成功
         """
+        self._ensure_mcp_initialized()
         return self.mcp_registry.register_tool(mcp_tool)
 
     def execute_mcp_tool(self, tool_name: str, **kwargs) -> dict[str, Any]:
@@ -678,4 +679,13 @@ class ToolRegistry:
         Returns:
             执行结果
         """
+        if self.mcp_registry is None:
+            return {"success": False, "error": "未注册任何 MCP 工具"}
         return self.mcp_registry.execute_tool(tool_name, **kwargs)
+
+    def _ensure_mcp_initialized(self) -> None:
+        """懒初始化 MCP 注册表和集成工具（仅在首次注册 MCP 工具时）"""
+        if self.mcp_registry is None:
+            self.mcp_registry = MCPToolRegistry()
+            self.mcp_integration_tool = ConcreteMCPIntegrationTool(self.mcp_registry)
+            self.register(self.mcp_integration_tool)
