@@ -7,7 +7,6 @@ PyAgentKit 内置 Agent 实现
 - 交互过程存入 memory，保持上下文
 """
 
-import json
 from typing import Optional
 
 from core import Agent, Message, ToolRegistry, WebSearchTool, CalculatorTool, FileReadTool

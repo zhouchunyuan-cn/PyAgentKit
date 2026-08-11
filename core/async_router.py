@@ -27,6 +27,7 @@
 """
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -120,7 +121,6 @@ class AsyncRouter:
             await self._queue.join()  # 等待所有已入队消息处理完
         for task in self._consumer_tasks:
             task.cancel()
-        import contextlib
 
         for task in self._consumer_tasks:
             with contextlib.suppress(asyncio.CancelledError):

@@ -13,13 +13,10 @@ ReAct 推理引擎（ReactEngine）
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .llm import TokenUsage
 from .trace import Tracer
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
