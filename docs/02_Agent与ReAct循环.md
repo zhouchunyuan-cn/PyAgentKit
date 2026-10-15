@@ -80,16 +80,19 @@ if not result.tool_calls:
 **情况 B：模型请求调用工具**（`result.tool_calls` 非空）
 
 ```python
-# 1. 把模型的工具调用请求加入对话历史
-messages.append({"role": "assistant", "tool_calls": [...]})
+# 1. 把模型的工具调用请求加入对话历史（推理模型还会带上 reasoning_content）
+messages.append({"role": "assistant", "tool_calls": [...], ...})
 
-# 2. 逐个执行工具
-for tc in result.tool_calls:
-    tool_result = self._execute_tool_safe(tc.name, tc.arguments)
-    messages.append({"role": "tool", "content": json.dumps(tool_result)})
+# 2. 执行工具（多个工具并发执行，结果按声明顺序回填对话）
+tool_results = self._execute_tool_calls(result.tool_calls, ...)
+for tc, tool_result in zip(result.tool_calls, tool_results):
+    messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(tool_result)})
 
 # 3. 继续下一轮循环——带着工具结果再问 LLM
 ```
+
+> 同一步返回的多个工具调用会在线程池里**并发执行**（上限 4），但结果严格按
+> `tool_calls` 的声明顺序回填——对话协议的确定性不受并发影响。
 
 ### 完整时序
 
@@ -120,9 +123,11 @@ think("计算 (15+27)*3")
 
 循环让模型可以：**先说要调什么工具 → 真的去调 → 拿到真实结果 → 基于结果继续推理**。这就是 Agent 区别于聊天机器人的本质。
 
-## 2.5 工具调用的安全边界
+## 2.5 工具调用的安全边界（参数校验 + 异常边界）
 
-`_execute_tool_safe` 包裹了工具执行：
+工具执行有两层防护。第一层在 `ToolRegistry.execute`：**按工具声明的 JSON Schema 校验参数**——必填检查 + 轻量类型矫正（`"3"`→3、`3`→`"3"`、`"true"`→True，LLM 给错类型是常事）。校验失败抛出**带 schema 说明**的错误，让模型拿到自纠所需的信息。
+
+第二层是 engine 的异常边界 `_execute_tool_safe`：
 
 ```python
 def _execute_tool_safe(self, tool_name, arguments):
@@ -132,11 +137,13 @@ def _execute_tool_safe(self, tool_name, arguments):
         return {"error": f"工具 '{tool_name}' 执行失败: {str(e)}"}
 ```
 
-工具失败不会中断 think() 循环——错误作为 tool 结果回传给 LLM，让模型自己决定怎么办（换个工具、放弃、或基于已知信息回答）。
+校验错误和执行错误都不会中断 think() 循环——错误作为 tool 结果回传给 LLM，模型下一步就能自己纠正参数或换个做法。
 
-## 2.6 流式输出
+## 2.6 流式输出、事件流与混合推理模型
 
-默认 `think()` 等模型完整生成才返回。传入 `stream_callback` 后，最终答复会**逐块实时回调**：
+### 真流式（stream_callback）
+
+只要传入 `stream_callback`，ReAct 主循环的**每一步 LLM 调用都走 `chat_stream` 真流式**——首字延迟 ≈ 模型出第一个字的时间，而不是整个答复生成完：
 
 ```python
 def on_chunk(text):
@@ -145,7 +152,44 @@ def on_chunk(text):
 agent.think("介绍量子纠缠", stream_callback=on_chunk)
 ```
 
-机制：当模型给出最终答复时（无工具调用），直接用已拿到的 `result.content`，通过 `_emit_via_callback` 按段回调（**不重复调用 LLM**，避免双倍 token 消耗）。仅在 `max_steps` 耗尽的收尾调用中才使用真正的 `chat_stream` 流式请求。工具调用步骤始终用非流式（需解析结构化的 tool_calls）。
+注意一个流式语义细节：模型在发起工具调用前常会先输出一段叙述性文字（"我先搜索一下…"），这段文字也会实时流到回调里——这和主流 Agent 产品的行为一致。
+
+流式中的工具调用不会丢：`chat_stream` 把工具调用拆成碎片（`delta_tool_calls`）逐块送达，engine 按 index 累积拼装成完整的 `ToolCall`。流在还没产出任何内容时失败，会安全回退一次非流式调用。
+
+### 结构化事件流（events_callback）
+
+文本回调之外，还可以拿到**执行过程的全部事件**——前端据此渲染"正在思考/正在调用工具"：
+
+```python
+from core import AgentStreamEvent
+
+def on_event(ev: AgentStreamEvent):
+    if ev.type == "reasoning":   # 思考过程增量（推理模型）
+        print(f"\033[2m{ev.content}\033[0m", end="")
+    elif ev.type == "text":      # 文本增量
+        print(ev.content, end="")
+    elif ev.type == "tool_call": # {"name": ..., "arguments": ...}
+        print(f"\n· 调用工具 {ev.content['name']}")
+
+agent.think("搜索量子纠缠进展", events_callback=on_event)
+```
+
+事件类型：`reasoning` / `text` / `tool_call` / `tool_result`，都带 `step` 编号。CLI 的 `chat` 命令就是这么实现的。
+
+### 混合推理模型（thinking / reasoning_content）
+
+GLM-4.5+ 是混合推理模型，开启深度思考后响应里带 `reasoning_content`（思考过程）。框架全程透传：`ChatResult.reasoning_content` 字段、流式的 `delta_reasoning` 增量、`reasoning` 事件。带工具调用的 assistant 消息会**回传 reasoning_content**，多轮推理保持连贯（Preserved Thinking）。
+
+```python
+llm = GLMClient(model="glm-4.7-flash", thinking=True)   # 开思考，输出含推理过程
+llm = GLMClient(model="glm-4.7-flash", thinking=False)  # 关思考，省 token 降延迟
+llm = GLMClient(model="glm-4-flash")                    # 不传，由模型默认决定
+```
+
+### 相关延伸
+
+- **结构化输出**：`think(..., response_format={"type": "json_object"})` 约束模型输出合法 JSON（第 6 章 Leader 规划就在用）
+- **异步执行**：`await agent.think_async(...)`，asyncio 程序与多 Agent 并发的入口（第 7 章）
 
 ## 2.7 Token 统计
 

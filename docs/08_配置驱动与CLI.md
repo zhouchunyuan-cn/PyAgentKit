@@ -118,21 +118,25 @@ team = loader.build_team(config, agents)  # 有 team 块时返回 Team，否则 
 
 `pyagentkit` 命令基于 Python 标准库 argparse（零额外依赖）：
 
-### chat——交互式对话
+### chat——交互式对话（实时流式）
 
 ```bash
 pyagentkit chat --tools web_search calculator
 ```
 
-构建默认通用助手 Agent，包裹在 ConversationSession 里，进入交互循环。支持 `:q` 退出、`:clear` 清空上下文。
+构建默认通用助手 Agent，包裹在 ConversationSession 里，进入交互循环。回复**实时流式输出**：思考过程（推理模型）暗色显示、文本亮色流出、工具调用显示提示行。支持 `:q` 退出、`:clear` 清空上下文。
 
 ### ask——单次提问
 
 ```bash
 pyagentkit ask "计算 (15+27)*3" --tools calculator
+# 或者用逗号单值写法（选项在前也行）：
+pyagentkit ask --tools=web_search,calculator "什么是AI"
 ```
 
-提一个问题，得到答复后退出。适合脚本化调用。
+提一个问题，得到答复后退出。适合脚本化调用（日志走 stderr，`> out.txt` 只捕获答复）。
+
+> **参数顺序小坑**：`--tools` 是多值参数，`ask --tools web_search "问题"` 会把问题也吞成工具名。把问题放在 `--tools` 前面，或用 `--tools=a,b` 逗号写法。
 
 ### run——加载 YAML 配置
 

@@ -1,96 +1,106 @@
 #!/usr/bin/env python3
 """
-PyAgentKit MCP工具集成演示
-展示如何接入和使用其他MCP工具
+PyAgentKit 真 MCP 客户端演示
+
+按官方协议（Model Context Protocol）接入 MCP 服务器：
+initialize 握手 → tools/list 发现工具 → call_tool 调用。
+支持两种官方传输：Streamable HTTP 与 stdio 子进程。
+
+前置条件：
+1. API Key：复制 .env.example 为 .env 并填入 ZHIPUAI_API_KEY
+2. 可选依赖：pip install "mcp>=1.20"（或 pip install -e ".[mcp]"）
+3. 一个运行中的 MCP 服务器（下方 URL / 命令按你的环境修改）
+
+用法：
+    python mcp_demo.py               # 连接 Streamable HTTP 服务器
+    python mcp_demo.py --stdio       # 连接 stdio 子进程服务器
 """
 
-from agents import AnalyzerAgent, ResearchAgent, UserAgent, WriterAgent
-from core import Message, Router
-from core.mcp_tools import MCPTool
+import asyncio
+import sys
+
+from core import MCPServerConfig
 
 
-def create_sample_mcp_tool():
-    """
-    创建一个示例MCP工具
-    """
-    mcp_tool = MCPTool(
-        name="sample_file_system",
-        description="示例文件系统工具，支持文件读写操作",
-        mcp_endpoint="http://localhost:8000/mcp",
-    )
-    return mcp_tool
+async def demo_discover_and_call(config: MCPServerConfig) -> None:
+    """异步 API：发现远端工具并调用（也可用同步版 provider.discover()）"""
+    from core.mcp_client import MCPToolProvider
+
+    provider = MCPToolProvider(config)
+    try:
+        tools = await provider.adiscover()
+        print(f"已连接 {config.name}，发现 {len(tools)} 个工具：")
+        for t in tools:
+            print(f"  - {t.name}: {t.description[:60]}")
+
+        if not tools:
+            print("服务器上没有工具，结束演示")
+            return
+
+        # 调用第一个工具做冒烟测试（参数按它的 schema 给；无参工具直接调）
+        first = tools[0]
+        params = {k: f"demo-{k}" for k in (first.parameters.get("properties") or {})}
+        result = await provider.acall_tool(first.name, params)
+        print(f"\n调用 {first.name} 的结果：{result}")
+    finally:
+        provider.close()
 
 
-def main():
-    """
-    主函数 - 演示MCP工具集成
-    """
-    print("PyAgentKit MCP工具集成演示")
-    print("=" * 50)
-
-    # 创建核心组件
+def demo_registry_integration() -> None:
+    """Agent 集成方式：一步完成 连接 → 发现 → 注册为本地 Tool"""
+    from core.agent import Agent
     from core.llm import GLMClient
 
     llm = GLMClient(model="glm-4-flash")
-    router = Router()
 
-    # 创建Agents
-    user_agent = UserAgent()
-    research_agent = ResearchAgent(llm_client=llm)
-    writer_agent = WriterAgent(llm_client=llm)
-    analyzer_agent = AnalyzerAgent(llm_client=llm)
+    class MCPAgent(Agent):
+        """挂载 MCP 服务器工具的通用 Agent"""
 
-    # 注册Agents
-    router.register_agent(user_agent)
-    router.register_agent(research_agent)
-    router.register_agent(writer_agent)
-    router.register_agent(analyzer_agent)
+        def __init__(self, config: MCPServerConfig):
+            super().__init__(
+                agent_id="mcp_assistant",
+                name="MCP 助手",
+                system_prompt="你可以调用 MCP 服务器上的工具完成任务。",
+                llm_client=llm,
+                capabilities=["mcp"],
+            )
+            # 关键一行：连接服务器，把它的工具自动注册进来（schema 随迁）
+            names = self.tool_registry.register_mcp_server(config)
+            print(f"[{self.name}] 已挂载 MCP 工具：{names}")
 
-    # 为AnalyzerAgent添加MCP工具支持
-    sample_mcp_tool = create_sample_mcp_tool()
-    analyzer_agent.tool_registry.register_mcp_tool(sample_mcp_tool)
+        def receive(self, message):
+            pass  # 演示场景直接用 think
 
-    print("1. 演示MCP工具注册:")
-    mcp_tools = analyzer_agent.tool_registry.mcp_registry.list_tools()
-    for name, desc in mcp_tools.items():
-        print(f"  - {name}: {desc}")
+    agent = MCPAgent(MCPServerConfig(url="http://localhost:8000/mcp"))
+    print(agent.think("用 MCP 工具帮我处理一个示例任务"))
+    agent.tool_registry.close_mcp_servers()  # 退出前断开（释放 stdio 子进程）
 
-    print("\n2. 演示MCP工具执行:")
-    # 演示文件读取MCP工具
-    result = analyzer_agent.tool_registry.execute_mcp_tool(
-        "sample_file_system", command="read_file", params={"path": "example.txt"}
-    )
-    print(f"  文件读取结果: {result}")
 
-    # 演示文件写入MCP工具
-    result = analyzer_agent.tool_registry.execute_mcp_tool(
-        "sample_file_system",
-        command="write_file",
-        params={"path": "output.txt", "content": "Hello from MCP tool!"},
-    )
-    print(f"  文件写入结果: {result}")
+def main() -> None:
+    print("PyAgentKit 真 MCP 客户端演示")
+    print("=" * 50)
 
-    # 演示命令执行MCP工具
-    result = analyzer_agent.tool_registry.execute_mcp_tool(
-        "sample_file_system", command="execute_command", params={"cmd": "ls -la"}
-    )
-    print(f"  命令执行结果: {result}")
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        print("未安装官方 mcp SDK。请运行：pip install 'mcp>=1.20'")
+        print("（或安装项目可选依赖：pip install -e '.[mcp]'）")
+        sys.exit(1)
 
-    print("\n3. 演示传统工作流程:")
-    # 模拟用户提问
-    user_question = "人工智能"
-    print(f"[System] 用户提问: {user_question}")
+    use_stdio = "--stdio" in sys.argv
+    if use_stdio:
+        # stdio 传输：框架拉起子进程并与之按协议通信（命令按你的服务器修改）
+        config = MCPServerConfig(command="python", args=["my_mcp_server.py"], name="stdio-server")
+    else:
+        # Streamable HTTP 传输
+        config = MCPServerConfig(url="http://localhost:8000/mcp", name="http-server")
 
-    # 创建初始消息
-    initial_message = Message(
-        sender="user", receiver="researcher", content=user_question, msg_type="research_request"
-    )
-
-    # 路由消息启动研究流程
-    print("\n开始处理用户研究请求...")
-    router.route_message(initial_message)
-
-    print("\n演示完成")
+    try:
+        asyncio.run(demo_discover_and_call(config))
+        demo_registry_integration()
+    except ConnectionError as e:
+        print(f"\n连接 MCP 服务器失败：{e}")
+        print("请确认服务器已启动，并修改 mcp_demo.py 里的 url / command 配置。")
 
 
 if __name__ == "__main__":

@@ -380,7 +380,7 @@ Hierarchical 模式续跑会直接复用断点中的任务规划（省一次 Lea
 - **SDK**: zhipuai、python-dotenv、pyyaml
 - **向量记忆**: scikit-learn (TF-IDF) + numpy（本地零成本，可切 GLM embedding）
 - **异步**: asyncio（AsyncRouter）
-- **测试**: pytest（312 个用例）
+- **测试**: pytest（382 个用例）
 - **Python**: ≥ 3.10
 
 ## 测试
