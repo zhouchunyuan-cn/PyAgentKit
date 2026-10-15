@@ -56,14 +56,16 @@ class TestConfigToTeamE2E:
                 return ChatResult(content=f"产出{self.count}", finish_reason="stop")
 
         loader = ConfigLoader()
-        config = loader.parse({
-            "llm": {"model": "glm-4-flash"},
-            "agents": [
-                {"id": "a", "capabilities": ["x"]},
-                {"id": "b", "capabilities": ["x"]},
-            ],
-            "team": {"process": "sequential", "members": ["a", "b"]},
-        })
+        config = loader.parse(
+            {
+                "llm": {"model": "glm-4-flash"},
+                "agents": [
+                    {"id": "a", "capabilities": ["x"]},
+                    {"id": "b", "capabilities": ["x"]},
+                ],
+                "team": {"process": "sequential", "members": ["a", "b"]},
+            }
+        )
         fake_llm = FakeLLM()
         _, agents, _ = loader.build(config, llm_client=fake_llm)
         team = loader.build_team(config, agents)
@@ -90,17 +92,21 @@ class TestConfigToTeamE2E:
                 return ChatResult(content="成员产出", finish_reason="stop")
 
         loader = ConfigLoader()
-        config = loader.parse({
-            "llm": {"model": "glm-4-flash"},
-            "agents": [
-                {"id": "leader", "capabilities": ["plan"], "system_prompt": "你是项目经理"},
-                {"id": "worker", "capabilities": ["work"]},
-            ],
-            "team": {
-                "process": "hierarchical", "leader": "leader",
-                "members": ["worker"], "max_subtasks": 2,
-            },
-        })
+        config = loader.parse(
+            {
+                "llm": {"model": "glm-4-flash"},
+                "agents": [
+                    {"id": "leader", "capabilities": ["plan"], "system_prompt": "你是项目经理"},
+                    {"id": "worker", "capabilities": ["work"]},
+                ],
+                "team": {
+                    "process": "hierarchical",
+                    "leader": "leader",
+                    "members": ["worker"],
+                    "max_subtasks": 2,
+                },
+            }
+        )
         fake_llm = FakeLLM()
         _, agents, _ = loader.build(config, llm_client=fake_llm)
         team = loader.build_team(config, agents)
@@ -117,14 +123,18 @@ class TestConfigToTeamE2E:
 class TestStreamingWithTools:
     def test_stream_callback_with_tool_calls(self):
         """stream_callback + 工具调用：工具步骤非流式，最终答复模拟流式"""
-        llm = MockLLM([
-            ChatResult(
-                content="",
-                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "2*3"})],
-                finish_reason="tool_calls",
-            ),
-            ChatResult(content="结果是6", finish_reason="stop"),
-        ])
+        llm = MockLLM(
+            [
+                ChatResult(
+                    content="",
+                    tool_calls=[
+                        ToolCall(id="c1", name="calculator", arguments={"expression": "2*3"})
+                    ],
+                    finish_reason="tool_calls",
+                ),
+                ChatResult(content="结果是6", finish_reason="stop"),
+            ]
+        )
 
         class A(Agent):
             def __init__(self):
@@ -196,7 +206,9 @@ class TestHooksWithTeam:
         class Member(Agent):
             def __init__(self):
                 super().__init__(
-                    "m", "成员", llm_client=llm,
+                    "m",
+                    "成员",
+                    llm_client=llm,
                     hooks=AgentHooks(
                         on_think_end=lambda ag, r: tool_events.append(r),
                     ),
@@ -251,9 +263,7 @@ class TestTracerWithHierarchical:
 
         Tracer.enable()
         Tracer.start_trace("team_task")
-        team = Team(
-            name="T", members=[Worker()], process=SequentialProcess(), leader=Leader()
-        )
+        team = Team(name="T", members=[Worker()], process=SequentialProcess(), leader=Leader())
         # 用 sequential 测试更简单，hierarchical 需要 plan JSON
         team.run("任务")
         trace = Tracer.end_trace()

@@ -20,6 +20,7 @@
     result = team.run("写一篇关于量子计算的科普文章")
 """
 
+import contextlib
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -236,12 +237,14 @@ class HierarchicalProcess(Process):
     name = "hierarchical"
 
     # Leader 规划任务的 prompt 模板
+    # 注意：配合 response_format={"type": "json_object"} 使用，模型被约束为
+    # 输出合法 JSON 对象；对不支持该参数的客户端自动回退普通文本解析
     _PLAN_PROMPT = (
         "你是一个团队的项目经理。团队任务如下：\n{task}\n\n"
         "团队成员及其能力：\n{members}\n\n"
         "请把任务拆解为 2-{max_subtasks} 个子任务，每个子任务指定由哪种能力来完成。"
-        "只输出 JSON 数组，不要任何其他文字。格式：\n"
-        '[{{"subtask": "子任务描述", "capability": "能力名"}}]\n'
+        "只输出 JSON 对象，不要任何其他文字。格式：\n"
+        '{{"subtasks": [{{"subtask": "子任务描述", "capability": "能力名"}}]}}\n'
         "capability 必须从上述成员能力中选择。"
     )
 
@@ -342,6 +345,10 @@ class HierarchicalProcess(Process):
         """
         让 Leader 规划子任务
 
+        优先用 response_format={"type": "json_object"} 约束模型输出合法 JSON
+        （可靠性远高于自由文本 + 正则抠取）；客户端不支持该参数时自动降级
+        为普通调用，解析层再兜底。
+
         Returns:
             子任务列表 [{"subtask": str, "capability": str}]
             解析失败时回退为"每个成员一个子任务"
@@ -354,7 +361,11 @@ class HierarchicalProcess(Process):
         )
 
         try:
-            raw = leader.think(prompt, use_tools=False)
+            try:
+                raw = leader.think(prompt, use_tools=False, response_format={"type": "json_object"})
+            except TypeError:
+                # LLM 客户端不支持 response_format 参数（自定义/旧实现）：回退
+                raw = leader.think(prompt, use_tools=False)
             subtasks = self._parse_plan(raw, members)
             if subtasks:
                 return subtasks[: self.max_subtasks]
@@ -366,30 +377,42 @@ class HierarchicalProcess(Process):
 
     def _parse_plan(self, raw: str, members: list[Agent]) -> list[dict[str, str]]:
         """
-        解析 Leader 输出的 JSON 子任务规划
+        解析 Leader 输出的子任务规划（多层容错）
 
-        容错：提取首个 JSON 数组、校验字段、过滤无效项。
+        依次尝试：整体 JSON 解析（json_object 模式的正常产物）→ 从自由文本中
+        截取首个 JSON 对象/数组（旧模型/不支持约束的客户端的兜底）→ 校验字段。
         """
-        # 提取首个 [ ... ] 片段（Leader 可能混入其他文字）
-        start = raw.find("[")
-        end = raw.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            return []
+        text = raw.strip()
 
-        try:
-            data = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError:
-            return []
+        # 候选解析结果：整体解析优先，截取解析兜底
+        candidates: list[Any] = []
+        if text.startswith("{") or text.startswith("["):
+            with contextlib.suppress(json.JSONDecodeError):
+                candidates.append(json.loads(text))
+        for open_ch, close_ch in (("{", "}"), ("[", "]")):
+            start, end = text.find(open_ch), text.rfind(close_ch)
+            if start != -1 and end > start:
+                try:
+                    candidates.append(json.loads(text[start : end + 1]))
+                except json.JSONDecodeError:
+                    continue
 
-        result = []
-        for item in data:
-            if not isinstance(item, dict):
+        for data in candidates:
+            # 新格式：{"subtasks": [...]}；兼容旧格式：直接是数组
+            items = data.get("subtasks") if isinstance(data, dict) else data
+            if not isinstance(items, list):
                 continue
-            subtask = item.get("subtask") or item.get("task")
-            capability = item.get("capability") or item.get("ability")
-            if subtask and capability:
-                result.append({"subtask": str(subtask), "capability": str(capability)})
-        return result
+            result = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                subtask = item.get("subtask") or item.get("task")
+                capability = item.get("capability") or item.get("ability")
+                if subtask and capability:
+                    result.append({"subtask": str(subtask), "capability": str(capability)})
+            if result:
+                return result
+        return []
 
     @staticmethod
     def _fallback_plan(members: list[Agent]) -> list[dict[str, str]]:

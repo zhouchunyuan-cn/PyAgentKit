@@ -347,9 +347,7 @@ class TestTeamStreamCallback:
         leader = make_agent("L", "经理", ["plan"], MockLLM(plan=plan))
         worker = make_agent("w", "工人", ["work"], MockLLM(responses="成果"))
         collected = []
-        team = Team(
-            name="T", members=[worker], process=HierarchicalProcess(), leader=leader
-        )
+        team = Team(name="T", members=[worker], process=HierarchicalProcess(), leader=leader)
         result = team.run("任务", stream_callback=lambda s: collected.append(s))
         assert result == "最终汇总结果"
         # Leader 汇总的流式输出被回调

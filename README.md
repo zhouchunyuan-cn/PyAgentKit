@@ -32,7 +32,7 @@ pyagentkit run configs/team_example.yaml
 | 🤝 **能力驱动协作** | Agent 声明能力，协作策略按能力匹配（不依赖硬编码名字） |
 | 📋 **YAML 配置** | 声明式编排 Agent / 工具 / 会话 / 团队，零代码定制 |
 | 🖥️ **命令行工具** | `pyagentkit` 命令：交互对话 / 单次提问 / 跑配置 / 列工具 |
-| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、312 个单元测试守护 |
+| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、342 个单元测试守护 |
 
 ## 架构总览
 
@@ -131,13 +131,27 @@ print(agent.think("计算 (15 + 27) * 3"))      # -> 126
 print(agent.get_token_usage())  # TokenUsage(prompt_tokens=.., completion_tokens=.., total_tokens=..)
 ```
 
-### 流式输出
+### 流式输出（真流式 + 结构化事件）
 
 ```python
-# 传入 stream_callback，最终答复实时逐块回调
+# stream_callback：助手文本增量实时回调（贯穿 ReAct 主循环，首字延迟≈模型出字时间）
 chunks = []
 agent.think("介绍量子纠缠", stream_callback=lambda s: chunks.append(s))
-print("".join(chunks))  # 拼出完整答复
+print("".join(chunks))
+
+# events_callback：结构化事件流（推理模型思考过程 / 文本 / 工具调用全程可见）
+from core import AgentStreamEvent
+
+def on_event(ev: AgentStreamEvent):
+    if ev.type == "reasoning":  ...  # 思考增量（GLM-4.5+ 混合推理模型）
+    elif ev.type == "text":     ...  # 文本增量
+    elif ev.type == "tool_call":...  # {"name", "arguments"}
+
+agent.think("搜索量子纠缠最新进展", events_callback=on_event)
+
+# 混合推理模型：GLMClient 可显式开关思考（默认由模型决定）
+llm = GLMClient(model="glm-4.7-flash", thinking=True)   # 输出含 reasoning_content
+llm = GLMClient(model="glm-4.7-flash", thinking=False)  # 关闭思考省 token
 ```
 
 ### 让多个 Agent 协作
@@ -305,7 +319,7 @@ asyncio.run(main())
 ## 测试
 
 ```bash
-pytest tests/                   # 运行全部 312 个测试
+pytest tests/                   # 运行全部 342 个测试
 pytest tests/test_team.py -v    # 运行单个模块
 ```
 
@@ -346,7 +360,7 @@ python mcp_demo.py              # MCP 工具集成
 4. **可观测** — Trace 让每步耗时与 token 清晰可见，复杂协作不黑盒
 5. **安全** — AST 解析替代 eval、文件路径越界检测、敏感文件默认拒读、
    数据库只读白名单、消息跳数防环、异常边界
-6. **可测试** — 核心逻辑有 312 个单元测试守护，依赖可 mock
+6. **可测试** — 核心逻辑有 342 个单元测试守护，依赖可 mock
 
 ## 应用场景
 

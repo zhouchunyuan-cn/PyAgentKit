@@ -205,6 +205,9 @@ class TestAgentStreamingAndTokens:
 
         stream_callback 存在 + 模型直接给最终答复时，
         LLM 只应被调用一次（而非"先非流式拿结果，再流式重调"）。
+
+        注：真流式主路径下这一次调用走 chat_stream（而非 chat），
+        故统计 chat + stream 的总调用次数。
         """
         llm = StreamingMockLLM(["最终答复"], usage=TokenUsage(10, 20, 30))
 
@@ -219,9 +222,11 @@ class TestAgentStreamingAndTokens:
         collected = []
         agent.think("hi", stream_callback=lambda s: collected.append(s))
 
-        # 断言：只调用了 1 次 chat（修复前是 2 次：1次非流式 + 1次流式）
-        assert llm.chat_count == 1, f"应只调用1次 LLM，实际 {llm.chat_count} 次（双调用bug）"
-        # 流式回调仍被触发（模拟流式输出）
+        # 断言：总共只调用了 1 次 LLM（修复前是 2 次：1次非流式 + 1次流式）
+        assert llm.chat_count + llm.stream_calls == 1, (
+            f"应只调用1次 LLM，实际 chat={llm.chat_count} stream={llm.stream_calls}（双调用bug）"
+        )
+        # 真流式：文本增量实时到达，拼出完整答复
         assert "".join(collected) == "最终答复"
         # token 只累计一次（修复前会重复累计）
         assert agent.get_token_usage().total_tokens == 30

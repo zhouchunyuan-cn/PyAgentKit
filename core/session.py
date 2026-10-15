@@ -54,7 +54,13 @@ class ConversationSession:
         # 创建时间，便于会话管理
         self.created_at = time.time()
 
-    def chat(self, user_input: str, use_tools: bool = True) -> str:
+    def chat(
+        self,
+        user_input: str,
+        use_tools: bool = True,
+        stream_callback=None,
+        events_callback=None,
+    ) -> str:
         """
         进行一轮对话
 
@@ -64,6 +70,8 @@ class ConversationSession:
         Args:
             user_input: 本轮用户输入
             use_tools: 是否允许 Agent 调用工具
+            stream_callback: 流式回调（透传给 Agent.think，文本增量实时回调）
+            events_callback: 结构化事件回调（透传给 Agent.think）
 
         Returns:
             Agent 的本轮回复
@@ -71,11 +79,17 @@ class ConversationSession:
         # 把历史作为上下文（不含本轮输入，本轮输入由 think 内部添加）
         context = self._build_context_messages()
 
-        # 调用 Agent 推理
+        # 调用 Agent 推理（回调仅在显式提供时传入，兼容只认基础签名的 Agent 实现）
+        extra: dict = {}
+        if stream_callback is not None:
+            extra["stream_callback"] = stream_callback
+        if events_callback is not None:
+            extra["events_callback"] = events_callback
         response = self.agent.think(
             user_input=user_input,
             context_messages=context,
             use_tools=use_tools,
+            **extra,
         )
 
         # 记录本轮对话到历史

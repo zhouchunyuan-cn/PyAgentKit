@@ -157,6 +157,8 @@ class Agent(ABC):
         context_messages: list[dict[str, Any]] | None = None,
         use_tools: bool = True,
         stream_callback: Any = None,
+        events_callback: Any = None,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
         """
         ReAct 推理主循环（委托给 ReactEngine）
@@ -167,12 +169,23 @@ class Agent(ABC):
             user_input: 当前用户/上游输入文本
             context_messages: 额外的上下文消息，可选
             use_tools: 是否允许模型调用工具
-            stream_callback: 流式回调；传入后最终答复以流式方式产出
+            stream_callback: 流式回调；传入后助手文本增量实时产出（真流式）
+            events_callback: 结构化事件回调（AgentStreamEvent：reasoning/
+                             text/tool_call/tool_result），供前端渲染执行状态
+            response_format: 结构化输出约束（如 {"type": "json_object"}），
+                             需要确定性 JSON 输出时使用
 
         Returns:
             模型的最终文本答复
         """
-        return self._engine.think(user_input, context_messages, use_tools, stream_callback)
+        return self._engine.think(
+            user_input,
+            context_messages,
+            use_tools,
+            stream_callback,
+            events_callback,
+            response_format,
+        )
 
     # ------------------------------------------------------------------
     # 通信

@@ -342,15 +342,22 @@ class TestErrorRecovery:
 
     def test_mid_loop_failure_recovers(self):
         """循环中途失败（已有工具结果），应降级返回尽力答复"""
-        llm = FlakyLLM([
-            ("ok", ChatResult(
-                content="",
-                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})],
-                finish_reason="tool_calls",
-            )),
-            ("raise", ConnectionError("中途断了")),  # 第二步失败
-            ("ok", ChatResult(content="基于已有信息的答复", finish_reason="stop")),  # 降级成功
-        ])
+        llm = FlakyLLM(
+            [
+                (
+                    "ok",
+                    ChatResult(
+                        content="",
+                        tool_calls=[
+                            ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})
+                        ],
+                        finish_reason="tool_calls",
+                    ),
+                ),
+                ("raise", ConnectionError("中途断了")),  # 第二步失败
+                ("ok", ChatResult(content="基于已有信息的答复", finish_reason="stop")),  # 降级成功
+            ]
+        )
         agent = make_agent(llm)
         agent.tool_registry.register(CalculatorTool())
         result = agent.think("计算")
@@ -359,15 +366,22 @@ class TestErrorRecovery:
 
     def test_recovery_failure_still_raises(self):
         """降级调用也失败时，最终抛错"""
-        llm = FlakyLLM([
-            ("ok", ChatResult(
-                content="",
-                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})],
-                finish_reason="tool_calls",
-            )),
-            ("raise", ConnectionError("第一次断")),
-            ("raise", ConnectionError("降级也断")),
-        ])
+        llm = FlakyLLM(
+            [
+                (
+                    "ok",
+                    ChatResult(
+                        content="",
+                        tool_calls=[
+                            ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})
+                        ],
+                        finish_reason="tool_calls",
+                    ),
+                ),
+                ("raise", ConnectionError("第一次断")),
+                ("raise", ConnectionError("降级也断")),
+            ]
+        )
         agent = make_agent(llm)
         agent.tool_registry.register(CalculatorTool())
         with pytest.raises(RuntimeError, match="失败"):
@@ -395,7 +409,9 @@ class TestPersistence:
     def test_enable_persistence_writes_file(self, tmp_path):
         """enable_persistence 后长期记忆应落盘"""
         filepath = str(tmp_path / "test_persist.json")
-        agent = make_agent(ScriptedLLM([]), )
+        agent = make_agent(
+            ScriptedLLM([]),
+        )
         agent.enable_persistence(filepath)
         agent.remember("key1", "value1", memory_type="long")
         import json
@@ -443,7 +459,9 @@ class TestHooks:
         class A(Agent):
             def __init__(self):
                 super().__init__(
-                    "a", "助手", llm_client=llm,
+                    "a",
+                    "助手",
+                    llm_client=llm,
                     hooks=AgentHooks(
                         on_think_start=lambda ag, inp: events.append(("start", inp)),
                         on_think_end=lambda ag, resp: events.append(("end", resp)),
@@ -461,21 +479,27 @@ class TestHooks:
     def test_on_tool_call_hook(self):
         """on_tool_call 在工具执行后被触发"""
         tool_calls_made = []
-        llm = ScriptedLLM([
-            ChatResult(
-                content="",
-                tool_calls=[ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})],
-                finish_reason="tool_calls",
-            ),
-            ChatResult(content="done", finish_reason="stop"),
-        ])
+        llm = ScriptedLLM(
+            [
+                ChatResult(
+                    content="",
+                    tool_calls=[
+                        ToolCall(id="c1", name="calculator", arguments={"expression": "1+1"})
+                    ],
+                    finish_reason="tool_calls",
+                ),
+                ChatResult(content="done", finish_reason="stop"),
+            ]
+        )
 
         class A(Agent):
             def __init__(self):
                 from core.hooks import AgentHooks
 
                 super().__init__(
-                    "a", "助手", llm_client=llm,
+                    "a",
+                    "助手",
+                    llm_client=llm,
                     hooks=AgentHooks(
                         on_tool_call=lambda ag, name, args, res: tool_calls_made.append(name),
                     ),
@@ -498,7 +522,9 @@ class TestHooks:
         class A(Agent):
             def __init__(self):
                 super().__init__(
-                    "a", "助手", llm_client=llm,
+                    "a",
+                    "助手",
+                    llm_client=llm,
                     hooks=AgentHooks(on_think_start=lambda ag, inp: False),
                 )
 
@@ -520,7 +546,9 @@ class TestHooks:
         class A(Agent):
             def __init__(self):
                 super().__init__(
-                    "a", "助手", llm_client=llm,
+                    "a",
+                    "助手",
+                    llm_client=llm,
                     hooks=AgentHooks(
                         on_think_end=lambda ag, r: 1 / 0,  # 故意报错
                     ),

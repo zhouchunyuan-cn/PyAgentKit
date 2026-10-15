@@ -12,7 +12,6 @@ Agent 生命周期钩子
     agent.hooks = hooks   # 或在 Agent.__init__ 传 hooks=hooks
 """
 
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any

@@ -657,9 +657,71 @@ class DatabaseTool(Tool):
             self._conn.close()
 
 
+def _coerce_to_schema_type(declared: Any, value: Any) -> tuple[Any, bool]:
+    """
+    按 JSON Schema 类型声明矫正 LLM 给出的参数值
+
+    LLM 常见的类型瑕疵做轻量矫正（"3" → 3、3 → "3"、"true" → True），
+    无法安全矫正时返回 (原值, False)。
+
+    Returns:
+        (矫正后的值, 是否可接受)
+    """
+    if declared is None:
+        return value, True
+    types = declared if isinstance(declared, list) else [declared]
+
+    for t in types:
+        if t == "null":
+            if value is None:
+                return value, True
+        elif t == "string":
+            if isinstance(value, str):
+                return value, True
+            if isinstance(value, (int, float, bool)):
+                return str(value), True
+        elif t == "integer":
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                return value, True
+            if isinstance(value, float) and value.is_integer():
+                return int(value), True
+            if isinstance(value, str):
+                try:
+                    return int(value.strip()), True
+                except ValueError:
+                    continue
+        elif t == "number":
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return value, True
+            if isinstance(value, str):
+                try:
+                    return float(value.strip()), True
+                except ValueError:
+                    continue
+        elif t == "boolean":
+            if isinstance(value, bool):
+                return value, True
+            if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+                return value.strip().lower() == "true", True
+        elif t == "array":
+            if isinstance(value, list):
+                return value, True
+        elif t == "object" and isinstance(value, dict):
+            return value, True
+    return value, False
+
+
 class ToolRegistry:
     """
     工具注册表
+
+    执行前按工具声明的 JSON Schema 校验 LLM 给出的参数（必填检查 + 类型
+    矫正），校验失败抛出带 schema 说明的 ValueError——上层把它作为工具
+    错误回传给模型，模型可在下一步自行纠正参数。
     """
 
     def __init__(self):
@@ -691,7 +753,7 @@ class ToolRegistry:
 
     def execute(self, tool_name: str, **kwargs) -> Any:
         """
-        执行工具
+        执行工具（先做参数校验与类型矫正）
 
         Args:
             tool_name: 工具名称
@@ -701,13 +763,57 @@ class ToolRegistry:
             工具执行结果
 
         Raises:
-            ValueError: 工具未找到时抛出异常
+            ValueError: 工具未找到，或参数不符合工具声明的 schema
         """
         tool = self.get(tool_name)
-        if tool:
-            return tool.run(**kwargs)
-        else:
+        if tool is None:
             raise ValueError(f"Tool '{tool_name}' not found")
+        checked = self._validate_arguments(tool, kwargs)
+        return tool.run(**checked)
+
+    @staticmethod
+    def _validate_arguments(tool: Tool, arguments: dict[str, Any]) -> dict[str, Any]:
+        """
+        按工具的 JSON Schema 校验参数：必填检查 + 类型矫正
+
+        Returns:
+            矫正后的参数字典
+
+        Raises:
+            ValueError: 校验失败，消息包含具体问题与期望的 schema（供模型自纠）
+        """
+        schema = getattr(tool, "parameters", None) or {}
+        props = schema.get("properties") or {}
+        required = schema.get("required") or []
+
+        errors: list[str] = []
+        result = dict(arguments)
+
+        missing = [k for k in required if k not in arguments or arguments[k] is None]
+        if missing:
+            errors.append(f"缺少必填参数: {missing}")
+
+        for key, value in arguments.items():
+            if key not in props:
+                denied = schema.get("additionalProperties") is False
+                if denied:
+                    errors.append(f"参数 '{key}' 不被允许")
+                continue
+            declared = props[key].get("type")
+            coerced, ok = _coerce_to_schema_type(declared, value)
+            if ok:
+                result[key] = coerced
+            else:
+                errors.append(
+                    f"参数 '{key}' 需要 {declared} 类型，实际收到 {type(value).__name__}: {value!r}"
+                )
+
+        if errors:
+            raise ValueError(
+                f"工具 '{tool.name}' 参数校验失败：{'；'.join(errors)}。"
+                f"期望的参数 schema: {json.dumps(schema, ensure_ascii=False)}"
+            )
+        return result
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """

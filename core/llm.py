@@ -40,12 +40,16 @@ class ChatResult:
         tool_calls: 工具调用列表，为空表示模型已给出最终答复
         finish_reason: 结束原因 ("stop" / "tool_calls" / "length" 等)
         usage: token 用量统计，None 表示模型未返回
+        reasoning_content: 混合推理模型（GLM-4.5+）的思考过程文本；
+                           非推理模型或未开启思考时为空串。
+                           多轮对话回传历史 assistant 消息时建议带上以保持推理连贯
     """
 
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: Optional["TokenUsage"] = None
+    reasoning_content: str = ""
 
 
 @dataclass
@@ -81,11 +85,17 @@ class StreamChunk:
         delta_content: 本块新增的文本片段（可能为空）
         finish_reason: 本块触发的结束原因；None 表示还在继续
         usage: 仅最后一块可能携带，汇总用量
+        delta_reasoning: 本块新增的思考过程片段（推理模型），可能为空
+        delta_tool_calls: 工具调用碎片列表。流式下一次工具调用会拆成多个碎片
+                          （首个碎片带 id/name，后续碎片追加 arguments 字符串），
+                          每项为 {"index", "id", "name", "arguments"}，缺失字段为 None
     """
 
     delta_content: str = ""
     finish_reason: str | None = None
     usage: TokenUsage | None = None
+    delta_reasoning: str = ""
+    delta_tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 class LLMClient(ABC):
@@ -102,6 +112,7 @@ class LLMClient(ABC):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
+        response_format: dict[str, Any] | None = None,
     ) -> ChatResult:
         """
         发起一次对话请求（非流式）
@@ -111,6 +122,8 @@ class LLMClient(ABC):
                       [{"role": "system"|"user"|"assistant"|"tool", "content": "..."}]
             tools: 可用工具的 schema 列表（OpenAI function-calling 格式），可选
             tool_choice: 工具选择策略 ("auto" / "none" / "required")
+            response_format: 结构化输出约束（如 {"type": "json_object"}），可选；
+                             不支持的实现会抛 TypeError，调用方可回退
 
         Returns:
             ChatResult: 统一的返回结果（含 token 用量）
@@ -127,7 +140,8 @@ class LLMClient(ABC):
         发起流式对话请求，逐块 yield StreamChunk
 
         默认实现回退到非流式 chat（作为单块返回），子类可覆盖以提供真实流式。
-        这样未实现流式的 LLMClient 子类仍可用 stream_callback 路径。
+        回退块会完整携带工具调用碎片与思考内容，因此仅实现同步 chat 的
+        客户端也能在流式驱动的主循环中正常工作。
 
         Yields:
             StreamChunk
@@ -137,6 +151,16 @@ class LLMClient(ABC):
             delta_content=result.content,
             finish_reason=result.finish_reason,
             usage=result.usage,
+            delta_reasoning=result.reasoning_content,
+            delta_tool_calls=[
+                {
+                    "index": i,
+                    "id": tc.id,
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                }
+                for i, tc in enumerate(result.tool_calls)
+            ],
         )
 
 
@@ -159,6 +183,7 @@ class GLMClient(LLMClient):
         api_key: str | None = None,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
+        thinking: bool | None = None,
     ):
         """
         初始化 GLM 客户端
@@ -169,6 +194,10 @@ class GLMClient(LLMClient):
             api_key: API Key，未提供则从环境变量 ZHIPUAI_API_KEY 读取
             max_retries: 最大重试次数
             retry_base_delay: 重试基础退避秒数（指数退避基数）
+            thinking: 混合推理模型的思考模式开关（GLM-4.5+ 支持）。
+                      None（默认）不传该参数、由模型侧默认决定；
+                      True 开启深度思考（响应含 reasoning_content）；
+                      False 关闭思考以降低延迟与 token 消耗
         """
         resolved_key = api_key or os.environ.get("ZHIPUAI_API_KEY")
         if not resolved_key:
@@ -187,13 +216,31 @@ class GLMClient(LLMClient):
         self.model = model
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        self.thinking = thinking
         self.client = ZhipuAI(api_key=resolved_key)
+
+    def _base_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """组装公共请求参数（thinking / response_format 仅在显式配置时传入）"""
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if self.thinking is not None:
+            kwargs["thinking"] = {"type": "enabled" if self.thinking else "disabled"}
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        return kwargs
 
     def chat(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
+        response_format: dict[str, Any] | None = None,
     ) -> ChatResult:
         """
         调用 GLM 对话接口
@@ -202,15 +249,12 @@ class GLMClient(LLMClient):
             messages: 对话消息列表（OpenAI 风格）
             tools: 可用工具 schema 列表，可选
             tool_choice: 工具选择策略
+            response_format: 结构化输出约束（如 {"type": "json_object"}），可选
 
         Returns:
-            ChatResult: 统一返回结果
+            ChatResult: 统一的返回结果
         """
-        # 组装请求参数（仅在有工具时传入 tools / tool_choice）
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-        }
+        kwargs = self._base_kwargs(messages, response_format=response_format)
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
@@ -242,17 +286,16 @@ class GLMClient(LLMClient):
         """
         流式调用 GLM，逐块 yield StreamChunk
 
-        文本增量通过 delta_content 产出；token 用量通常在最后一个 chunk 携带。
+        文本增量通过 delta_content 产出；思考增量通过 delta_reasoning 产出；
+        工具调用拆成 delta_tool_calls 碎片（由 ReactEngine 累积拼装）；
+        token 用量通常在最后一个 chunk 携带。
         流式不重试（流中断难以安全重发），失败即抛出。
         """
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-        }
+        kwargs = self._base_kwargs(messages)
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
+        kwargs["stream"] = True
 
         response = self.client.chat.completions.create(**kwargs)
         for chunk in response:
@@ -263,15 +306,39 @@ class GLMClient(LLMClient):
                 continue
             delta = getattr(choice, "delta", None)
             delta_content = getattr(delta, "content", None) if delta else None
+            delta_reasoning = getattr(delta, "reasoning_content", None) if delta else None
             finish_reason = getattr(choice, "finish_reason", None)
+            # 工具调用碎片：转为中立的 dict 形式，屏蔽 SDK 结构差异
+            tool_call_fragments = self._extract_tool_call_fragments(delta)
             # usage 通常只在最后一个 chunk 出现
             usage = self._extract_usage(chunk)
-            if delta_content or finish_reason or usage:
+            if delta_content or delta_reasoning or finish_reason or usage or tool_call_fragments:
                 yield StreamChunk(
                     delta_content=delta_content or "",
                     finish_reason=finish_reason,
                     usage=usage,
+                    delta_reasoning=delta_reasoning or "",
+                    delta_tool_calls=tool_call_fragments,
                 )
+
+    @staticmethod
+    def _extract_tool_call_fragments(delta: Any) -> list[dict[str, Any]]:
+        """把 SDK 的 delta.tool_calls 碎片转为中立 dict（无则空列表）"""
+        if delta is None:
+            return []
+        fragments = getattr(delta, "tool_calls", None) or []
+        result = []
+        for tc in fragments:
+            func = getattr(tc, "function", None)
+            result.append(
+                {
+                    "index": getattr(tc, "index", 0) or 0,
+                    "id": getattr(tc, "id", None),
+                    "name": getattr(func, "name", None) if func else None,
+                    "arguments": getattr(func, "arguments", None) if func else None,
+                }
+            )
+        return result
 
     def _parse_response(self, response: Any) -> ChatResult:
         """
@@ -281,7 +348,7 @@ class GLMClient(LLMClient):
             response: zhipuai SDK 返回的响应对象
 
         Returns:
-            ChatResult: 统一返回结果
+            ChatResult: 统一的返回结果
         """
         # 兼容 SDK 版本差异：choices[0].message
         choice = response.choices[0]
@@ -290,6 +357,8 @@ class GLMClient(LLMClient):
 
         # 提取文本内容
         content = getattr(message, "content", None) or ""
+        # 提取思考过程（混合推理模型；普通模型无此字段）
+        reasoning_content = getattr(message, "reasoning_content", None) or ""
 
         # 提取工具调用
         tool_calls: list[ToolCall] = []
@@ -320,6 +389,7 @@ class GLMClient(LLMClient):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            reasoning_content=reasoning_content,
         )
 
     @staticmethod

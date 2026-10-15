@@ -23,7 +23,7 @@ from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
 from .memory import Memory
 from .memory_manager import MemoryManager
 from .message import Message
-from .react_engine import ReactEngine
+from .react_engine import AgentStreamEvent, ReactEngine
 from .router import Router
 from .session import ConversationSession, SessionManager
 from .team import (
@@ -41,6 +41,7 @@ from .vector_memory import Embedder, GLMEmbedder, LocalTfidfEmbedder, VectorMemo
 __all__ = [
     "Agent",
     "AgentHooks",
+    "AgentStreamEvent",
     "Message",
     "Router",
     "Memory",

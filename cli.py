@@ -64,9 +64,40 @@ def _default_agent(model: str, tools=None) -> Agent:
     return _Assistant(llm, tools)
 
 
+_DIM, _RESET = "\033[2m", "\033[0m"
+
+
+def _make_event_printer():
+    """
+    构造 CLI 的流式事件渲染器
+
+    - 思考增量（推理模型）：暗色逐段输出
+    - 文本增量：正常亮度实时输出
+    - 工具调用：暗色单行提示（工具结果由模型消化，不打印避免刷屏）
+    """
+
+    def printer(event):
+        if event.type == "reasoning":
+            print(f"{_DIM}{event.content}{_RESET}", end="", flush=True)
+        elif event.type == "text":
+            print(event.content, end="", flush=True)
+        elif event.type == "tool_call":
+            args_preview = ", ".join(
+                f"{k}={str(v)[:40]!r}" for k, v in (event.content.get("arguments") or {}).items()
+            )
+            print(
+                f"\n{_DIM}· 调用工具 {event.content.get('name')}({args_preview}){_RESET}",
+                end="",
+                flush=True,
+            )
+
+    return printer
+
+
 def _interactive_loop(session: ConversationSession, prompt: str = "你") -> None:
-    """交互式对话主循环，直到用户退出"""
+    """交互式对话主循环，直到用户退出（回复实时流式输出）"""
     print("输入消息开始对话（输入 :q 退出，:clear 清空上下文）\n")
+    event_printer = _make_event_printer()
     while True:
         try:
             user_input = input(f"{prompt}> ").strip()
@@ -85,8 +116,9 @@ def _interactive_loop(session: ConversationSession, prompt: str = "你") -> None
             continue
 
         try:
-            reply = session.chat(user_input)
-            print(f"\n助手: {reply}\n")
+            print()  # 换行后开始流式输出
+            session.chat(user_input, events_callback=event_printer)
+            print("\n")
         except Exception as e:
             print(f"\n[错误] {e}\n")
 
