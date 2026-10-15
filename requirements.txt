@@ -12,8 +12,8 @@ python-dotenv>=1.0.0
 pyyaml>=6.0
 
 # 向量记忆（本地 TF-IDF embedder + cosine 相似度）
-numpy>=1.21.0
-scikit-learn>=1.0.0
+# 上界防止 numpy 2.x 与旧版 scikit-learn 组合出不可用环境
+numpy>=1.21.0,<3
+scikit-learn>=1.0.0,<2
 
-# 测试（开发依赖）
-pytest>=7.0.0
+# 测试为开发依赖：pip install -e ".[dev]"（见 pyproject.toml）

@@ -158,10 +158,15 @@ cython_debug/
 
 # Output files
 *.log
-*.json
 
-# Memory files (specific to this project)
+# 运行期产物（显式列出，避免 *.json 全局忽略吞掉未来的 JSON 配置/fixture）
+message_log.json
+monitoring_report.json
+
+# 记忆持久化文件（specific to this project）
 memory.json
+memory_*.json
+vector_memory*.json
 
 # VS Code
 .vscode/
