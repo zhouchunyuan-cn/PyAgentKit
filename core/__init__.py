@@ -19,6 +19,7 @@ from .collaboration import (
 )
 from .hooks import AgentHooks
 from .llm import ChatResult, GLMClient, LLMClient, StreamChunk, TokenUsage, ToolCall
+from .mcp_client import MCPClientError, MCPServerConfig, MCPToolProvider, RemoteMCPTool
 from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
 from .memory import Memory
 from .memory_manager import MemoryManager
@@ -55,6 +56,10 @@ __all__ = [
     "MCPTool",
     "MCPToolRegistry",
     "MCPIntegrationTool",
+    "MCPClientError",
+    "MCPServerConfig",
+    "MCPToolProvider",
+    "RemoteMCPTool",
     "LLMClient",
     "GLMClient",
     "ChatResult",

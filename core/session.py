@@ -7,7 +7,9 @@
 
 设计要点：
 - 一个 Session 绑定一个 Agent（单 Agent 多轮对话场景）
-- 历史按 token/条数限制滑动窗口，避免上下文爆炸
+- 历史按条数限制滑动窗口，避免上下文爆炸；可选开启"摘要压缩"
+  （summarize_on_trim）：被挤出窗口的旧对话用 LLM 压缩成摘要，
+  以 system 消息形式保留关键信息，而不是直接丢弃
 - 历史以 OpenAI messages 格式存储，可直接喂给 Agent.think(context_messages=...)
 """
 
@@ -17,6 +19,9 @@ import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 滚动摘要的最大字符数（超出保留最新部分）
+_MAX_SUMMARY_CHARS = 2000
 
 
 class ConversationSession:
@@ -35,6 +40,7 @@ class ConversationSession:
         session_id: str | None = None,
         max_history: int = 10,
         system_context: str | None = None,
+        summarize_on_trim: bool = False,
     ):
         """
         Args:
@@ -43,11 +49,16 @@ class ConversationSession:
             max_history: 保留的最大对话轮数（每轮含 user+assistant 两条），
                          超出则丢弃最早的，控制上下文长度
             system_context: 额外的系统级上下文提示，注入每轮对话开头
+            summarize_on_trim: 超窗时是否用 Agent 的 LLM 把被丢弃的旧对话
+                         压缩成滚动摘要（失败自动回退硬截断）
         """
         self.agent = agent
         self.session_id = session_id or str(uuid.uuid4())
         self.max_history = max_history
         self.system_context = system_context
+        self.summarize_on_trim = summarize_on_trim
+        # 滚动摘要：被挤出窗口的旧对话的压缩版（作为 system 消息注入）
+        self._summary: str | None = None
 
         # 对话历史，OpenAI messages 风格：[{"role","content"}, ...]
         self.history: list[dict[str, str]] = []
@@ -102,8 +113,10 @@ class ConversationSession:
         return response
 
     def _build_context_messages(self) -> list[dict[str, str]]:
-        """组装注入 think 的上下文消息（系统上下文 + 历史）"""
+        """组装注入 think 的上下文消息（滚动摘要 + 系统上下文 + 历史）"""
         messages: list[dict[str, str]] = []
+        if self._summary:
+            messages.append({"role": "system", "content": f"此前对话的摘要：\n{self._summary}"})
         if self.system_context:
             messages.append({"role": "system", "content": self.system_context})
         # 复制历史，避免被 think 内部修改影响
@@ -111,7 +124,11 @@ class ConversationSession:
         return messages
 
     def _trim_history(self) -> None:
-        """按 max_history 裁剪，保留最近的对轮（user+assistant 成对）"""
+        """按 max_history 裁剪，保留最近的对轮（user+assistant 成对）
+
+        开启 summarize_on_trim 时，被裁掉的旧对话先用 LLM 压缩进滚动摘要
+        （失败自动回退纯硬截断），关键信息得以跨窗口保留。
+        """
         if len(self.history) <= self.max_history:
             return
         # max_history 以"消息条数"计；从开头丢弃，保证剩余成对
@@ -119,7 +136,37 @@ class ConversationSession:
         # 若丢弃后开头是 assistant（不成对），多丢一条保持成对
         if drop < len(self.history) and self.history[drop]["role"] == "assistant":
             drop += 1
+        if self.summarize_on_trim:
+            summary = self._summarize_dropped(self.history[:drop])
+            if summary:
+                self._summary = (
+                    f"{self._summary}\n{summary}"[-_MAX_SUMMARY_CHARS:]
+                    if self._summary
+                    else summary
+                )
         self.history = self.history[drop:]
+
+    def _summarize_dropped(self, dropped: list[dict[str, str]]) -> str | None:
+        """
+        用 Agent 的 LLM 把被裁剪的旧对话压缩成一段摘要
+
+        直接调 llm.chat（不经过 think），避免记忆/钩子等副作用。
+        任何失败（无 LLM、调用异常、空结果）都返回 None，回退硬截断。
+        """
+        llm = getattr(self.agent, "llm", None)
+        if llm is None or not dropped:
+            return None
+        try:
+            transcript = "\n".join(f"{m['role']}: {m['content']}" for m in dropped)
+            prompt = (
+                "请把以下已结束的对话片段压缩成一段简短摘要，"
+                "保留关键事实、用户偏好、已做的决定与未决问题。直接输出摘要正文：\n" + transcript
+            )
+            result = llm.chat([{"role": "user", "content": prompt}], tools=None, tool_choice="none")
+            return (result.content or "").strip() or None
+        except Exception as e:
+            logger.warning("会话摘要压缩失败，回退硬截断: %s", e)
+            return None
 
     # ------------------------------------------------------------------
     # 会话管理
@@ -129,8 +176,9 @@ class ConversationSession:
         return [m.copy() for m in self.history]
 
     def clear_history(self) -> None:
-        """清空对话历史（开启全新话题）"""
+        """清空对话历史与滚动摘要（开启全新话题）"""
         self.history.clear()
+        self._summary = None
 
     def summary(self) -> dict[str, Any]:
         """返回会话摘要信息"""

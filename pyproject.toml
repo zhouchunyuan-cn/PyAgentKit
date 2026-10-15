@@ -47,6 +47,10 @@ dev = [
     "pytest>=7.0.0",
     "ruff>=0.4.0",
 ]
+# 真 MCP 客户端（core/mcp_client.py）需要官方 SDK；Python ≥3.10
+mcp = [
+    "mcp>=1.20",
+]
 
 [project.urls]
 Homepage = "https://github.com/zhouchunyuan-cn/PyAgentKit"

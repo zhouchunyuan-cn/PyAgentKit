@@ -7,6 +7,7 @@
 """
 
 import ast
+import contextlib
 import json
 import logging
 import operator
@@ -729,6 +730,8 @@ class ToolRegistry:
         # MCP 支持：懒初始化（仅在 register_mcp_tool 首次调用时创建）
         self.mcp_registry: MCPToolRegistry | None = None
         self.mcp_integration_tool: ConcreteMCPIntegrationTool | None = None
+        # 已连接的真 MCP 服务器 provider（会话生命周期挂在其上）
+        self.mcp_providers: list[Any] = []
 
     def register(self, tool: Tool) -> None:
         """
@@ -867,6 +870,37 @@ class ToolRegistry:
         if self.mcp_registry is None:
             return {"success": False, "error": "未注册任何 MCP 工具"}
         return self.mcp_registry.execute_tool(tool_name, **kwargs)
+
+    def register_mcp_server(self, config) -> list[str]:
+        """
+        连接真 MCP 服务器（官方协议：initialize → tools/list → call_tool），
+        把服务器的工具自动注册为本地 Tool（schema 随迁，直接可被 LLM 调用）
+
+        Args:
+            config: MCPServerConfig（url=Streamable HTTP 或 command=stdio 子进程）
+
+        Returns:
+            注册成功的工具名列表
+
+        Raises:
+            MCPClientError: 未安装可选依赖 mcp、或连接/发现失败
+        """
+        from .mcp_client import MCPToolProvider  # 延迟导入避免循环依赖
+
+        provider = MCPToolProvider(config)
+        tools = provider.discover()
+        for t in tools:
+            self.register(t)
+        # 保留 provider 引用：会话（含 stdio 子进程）的生命周期挂在它上面
+        self.mcp_providers.append(provider)
+        return [t.name for t in tools]
+
+    def close_mcp_servers(self) -> None:
+        """断开所有已连接的 MCP 服务器（进程退出前调用，释放 stdio 子进程）"""
+        for provider in self.mcp_providers:
+            with contextlib.suppress(Exception):
+                provider.close()
+        self.mcp_providers.clear()
 
     def _ensure_mcp_initialized(self) -> None:
         """懒初始化 MCP 注册表和集成工具（仅在首次注册 MCP 工具时）"""

@@ -4,14 +4,24 @@ LLM 客户端抽象层
 提供统一的 LLM 调用接口，解耦具体 SDK 实现。
 当前提供基于智谱 GLM（zhipuai SDK）的实现，
 未来可扩展 OpenAI / Ollama 等其他后端。
+
+异步支持：基类提供 achat / achat_stream（线程桥接到同步实现），
+子类可覆盖为原生异步。当前 zhipuai SDK (v2.x) 未提供异步客户端，
+GLMClient 直接复用基类桥接；asyncio.to_thread 会复制上下文
+（contextvars），追踪与消息链深度在异步路径不丢失。
 """
 
+import asyncio
 import json
+import logging
 import os
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -162,6 +172,57 @@ class LLMClient(ABC):
                 for i, tc in enumerate(result.tool_calls)
             ],
         )
+
+    async def achat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        response_format: dict[str, Any] | None = None,
+    ) -> ChatResult:
+        """
+        异步对话请求（默认实现：线程池承载同步 chat）
+
+        asyncio.to_thread 会复制当前上下文（contextvars），因此
+        消息链深度等状态在异步路径不丢失。子类可覆盖为原生异步实现。
+        """
+        if response_format is not None:
+            return await asyncio.to_thread(self.chat, messages, tools, tool_choice, response_format)
+        return await asyncio.to_thread(self.chat, messages, tools, tool_choice)
+
+    async def achat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+    ):
+        """
+        异步流式请求（默认实现：后台线程拉取同步流，经队列桥接为异步迭代器）
+
+        Yields:
+            StreamChunk
+        """
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel: object = object()
+
+        def pump() -> None:
+            try:
+                for chunk in self.chat_stream(messages, tools=tools, tool_choice=tool_choice):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as e:  # 把异常传回异步侧
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        threading.Thread(target=pump, daemon=True, name="llm-achat-stream").start()
+        while True:
+            item = await queue.get()
+            if item is sentinel:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
 
 class GLMClient(LLMClient):

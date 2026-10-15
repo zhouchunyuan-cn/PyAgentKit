@@ -59,6 +59,7 @@ class TeamSpec:
     members: list[str] = field(default_factory=list)  # 成员 agent id 列表；为空时用全部 agents
     max_subtasks: int = 5  # hierarchical 用
     max_steps: int = 10  # hierarchical 用
+    parallel: bool = False  # hierarchical 用：子任务按成员分组并行执行
 
 
 @dataclass
@@ -218,6 +219,7 @@ class ConfigLoader:
             members=[str(m) for m in members],
             max_subtasks=int(raw.get("max_subtasks", 5)),
             max_steps=int(raw.get("max_steps", 10)),
+            parallel=bool(raw.get("parallel", False)),
         )
 
     # ------------------------------------------------------------------
@@ -275,7 +277,11 @@ class ConfigLoader:
 
         leader = agents.get(spec.leader) if spec.leader else None
         if spec.process == "hierarchical":
-            process = HierarchicalProcess(max_subtasks=spec.max_subtasks, max_steps=spec.max_steps)
+            process = HierarchicalProcess(
+                max_subtasks=spec.max_subtasks,
+                max_steps=spec.max_steps,
+                parallel_subtasks=spec.parallel,
+            )
         else:
             process = SequentialProcess()
 

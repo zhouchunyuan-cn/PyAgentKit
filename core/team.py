@@ -23,8 +23,10 @@
 import contextlib
 import json
 import logging
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,12 +56,15 @@ class SharedContext:
         self.intermediate: dict[str, Any] = {}
         # 执行步骤记录，便于追溯
         self.history: list[dict[str, Any]] = []
+        # 并行模式下多个成员线程同时写黑板，加锁保证一致
+        self._lock = threading.Lock()
 
     def add_output(self, agent_id: str, output: str) -> None:
-        """记录某成员的产出（同一成员多次产出会全部保留在日志中）"""
-        self.outputs[agent_id] = output
-        self.output_log.append({"agent": agent_id, "output": output})
-        self.history.append({"agent": agent_id, "action": "output", "detail": output[:200]})
+        """记录某成员的产出（同一成员多次产出会全部保留在日志中；线程安全）"""
+        with self._lock:
+            self.outputs[agent_id] = output
+            self.output_log.append({"agent": agent_id, "output": output})
+            self.history.append({"agent": agent_id, "action": "output", "detail": output[:200]})
 
     def get_output(self, agent_id: str) -> str | None:
         """获取某成员的最新产出"""
@@ -255,14 +260,24 @@ class HierarchicalProcess(Process):
         "请综合所有产出，给出一份完整、连贯的最终结果。直接输出最终内容。"
     )
 
-    def __init__(self, max_subtasks: int = 5, max_steps: int = 10):
+    def __init__(
+        self,
+        max_subtasks: int = 5,
+        max_steps: int = 10,
+        parallel_subtasks: bool = False,
+    ):
         """
         Args:
             max_subtasks: Leader 最多拆出的子任务数上限（防止过度拆解）
             max_steps: 总执行步数上限（防死循环）
+            parallel_subtasks: 子任务并行执行（fan-out）。按执行成员分组，
+                        组间并行、组内串行（同一成员的会话状态不并发写）。
+                        注意：并行模式下各子任务拿不到彼此的产出（同时进行），
+                        依赖前序产出的任务请保持默认的顺序模式。
         """
         self.max_subtasks = max_subtasks
         self.max_steps = max_steps
+        self.parallel_subtasks = parallel_subtasks
 
     def execute(
         self,
@@ -283,7 +298,40 @@ class HierarchicalProcess(Process):
         ctx.add_intermediate("plan", subtasks)
         ctx.record_step("plan_done", f"{len(subtasks)} 个子任务")
 
-        # 2. 逐个子任务：按能力匹配成员并执行
+        # 2. 执行子任务：并行（按成员分组 fan-out）或逐个顺序执行
+        if self.parallel_subtasks and len(subtasks) > 1:
+            self._execute_subtasks_parallel(task, members, subtasks, ctx)
+        else:
+            self._execute_subtasks_sequential(task, members, subtasks, ctx)
+
+        # 3. Leader 汇总
+        if not ctx.outputs:
+            # 所有子任务都没找到匹配成员，回退：让每个成员都处理一次
+            logger.warning("[Hierarchical] 无任何产出，回退为全员顺序处理")
+            for member in members:
+                if member.llm is None:
+                    continue
+                out = member.think(
+                    f"团队任务：{task.description}\n\n此前产出：\n{ctx.get_all_outputs()}"
+                )
+                ctx.add_output(member.agent_id, out)
+
+        logger.info("[Hierarchical] Leader 汇总最终结果")
+        synthesis_input = self._SYNTHESIS_PROMPT.format(
+            task=task.description, outputs=ctx.get_all_outputs()
+        )
+        final = leader.think(synthesis_input, use_tools=False, stream_callback=stream_callback)
+        ctx.record_step("synthesis_done")
+        return final
+
+    def _execute_subtasks_sequential(
+        self,
+        task: Task,
+        members: list[Agent],
+        subtasks: list[dict[str, str]],
+        ctx: SharedContext,
+    ) -> None:
+        """顺序执行子任务：每个子任务都能看到此前所有产出"""
         steps = 0
         for st in subtasks:
             if steps >= self.max_steps:
@@ -315,25 +363,60 @@ class HierarchicalProcess(Process):
             ctx.add_output(member.agent_id, output)
             steps += 1
 
-        # 3. Leader 汇总
-        if not ctx.outputs:
-            # 所有子任务都没找到匹配成员，回退：让每个成员都处理一次
-            logger.warning("[Hierarchical] 无任何产出，回退为全员顺序处理")
-            for member in members:
-                if member.llm is None:
-                    continue
-                out = member.think(
-                    f"团队任务：{task.description}\n\n此前产出：\n{ctx.get_all_outputs()}"
-                )
-                ctx.add_output(member.agent_id, out)
+    def _execute_subtasks_parallel(
+        self,
+        task: Task,
+        members: list[Agent],
+        subtasks: list[dict[str, str]],
+        ctx: SharedContext,
+    ) -> None:
+        """
+        并行执行子任务（fan-out）
 
-        logger.info("[Hierarchical] Leader 汇总最终结果")
-        synthesis_input = self._SYNTHESIS_PROMPT.format(
-            task=task.description, outputs=ctx.get_all_outputs()
-        )
-        final = leader.think(synthesis_input, use_tools=False, stream_callback=stream_callback)
-        ctx.record_step("synthesis_done")
-        return final
+        按执行成员分组：组间并行、组内串行——同一成员的 brain/会话状态
+        不会被并发写入，不同成员之间互不阻塞。子任务数受 max_subtasks
+        约束，组数即并行度。
+        """
+        groups: dict[str, tuple[Agent, list[dict[str, str]]]] = {}
+        for st in subtasks:
+            member = self._find_member_by_capability(members, st["capability"])
+            if member is None:
+                ctx.record_step("no_matching_member", st)
+                logger.warning("[Hierarchical] 无成员具备能力 '%s'，跳过子任务", st["capability"])
+                continue
+            self._ensure_can_think(member)
+            entry = groups.setdefault(member.agent_id, (member, []))
+            entry[1].append(st)
+
+        if not groups:
+            return
+
+        def run_group(member: Agent, group_subtasks: list[dict[str, str]]) -> int:
+            count = 0
+            for st in group_subtasks[: self.max_steps]:
+                user_input = f"子任务：{st['subtask']}\n（团队整体目标：{task.description}）"
+                logger.info(
+                    "[Hierarchical·并行] 子任务交给 %s（能力 %s）", member.name, st["capability"]
+                )
+                span = Tracer.start_span(
+                    f"hierarchical:{member.agent_id}",
+                    member=member.agent_id,
+                    subtask=st["subtask"][:40],
+                    capability=st["capability"],
+                )
+                output = member.think(user_input)
+                Tracer.end_span(span)
+                ctx.add_output(member.agent_id, output)
+                count += 1
+            return count
+
+        ctx.record_step("parallel_fan_out", f"{len(groups)} 个成员组并行")
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(groups)), thread_name_prefix="subtask"
+        ) as pool:
+            futures = [pool.submit(run_group, m, sts) for m, sts in groups.values()]
+            executed = sum(f.result() for f in futures)
+        ctx.record_step("parallel_done", f"共执行 {executed} 个子任务")
 
     def _plan(
         self,

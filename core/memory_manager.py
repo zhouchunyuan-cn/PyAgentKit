@@ -43,16 +43,23 @@ class MemoryManager:
         memory: Memory | None = None,
         vector_memory: VectorMemory | None = None,
         conversation_max_history: int = 10,
+        max_long_term_in_context: int = 20,
+        long_term_char_budget: int = 4000,
     ):
         """
         Args:
             memory: KV 记忆后端；None 时新建默认 Memory
             vector_memory: 向量记忆后端；None 时不启用语义召回
             conversation_max_history: 内置会话历史保留的最大消息条数
+            max_long_term_in_context: 注入上下文的长期记忆最大条数
+                （取最近更新的条目，防止记忆无限膨胀拖贵每个请求）
+            long_term_char_budget: 长期记忆注入的字符预算（超出丢弃更旧的）
         """
         self.memory: Memory = memory if memory is not None else Memory()
         self.vector_memory: VectorMemory | None = vector_memory
         self.conversation_max_history = conversation_max_history
+        self.max_long_term_in_context = max_long_term_in_context
+        self.long_term_char_budget = long_term_char_budget
         # 内置会话历史（OpenAI messages 风格）
         self._conversation: list[dict[str, str]] = []
 
@@ -155,15 +162,10 @@ class MemoryManager:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        # 2. 长期记忆（KV）
+        # 2. 长期记忆（KV）：受条数与字符预算约束，取最近更新的部分
         long_term = self.memory.list_long_term_memory()
         if long_term:
-            try:
-                memory_brief = json.dumps(long_term, ensure_ascii=False)
-            except (TypeError, ValueError):
-                # 兜底：个别值不可序列化（如未开持久化时存入了任意对象），
-                # 降级为 repr 展示而不是让整个上下文组装失败
-                memory_brief = repr(long_term)
+            memory_brief = self._format_long_term(long_term)
             messages.append(
                 {
                     "role": "system",
@@ -192,6 +194,35 @@ class MemoryManager:
         # 6. 当前用户输入
         messages.append({"role": "user", "content": user_input})
         return messages
+
+    def _format_long_term(self, long_term: dict[str, Any]) -> str:
+        """
+        序列化长期记忆用于上下文注入（受条数与字符预算约束）
+
+        只注入最近更新的条目：先按条数截取，再从最新往前累计字符，
+        超出预算即丢弃更旧的。个别值不可序列化时降级 repr，不让
+        整个上下文组装失败。
+
+        Args:
+            long_term: 完整的长期记忆字典（dict 保持插入/更新顺序）
+
+        Returns:
+            JSON 字符串（或 repr 兜底）
+        """
+        items = list(long_term.items())[-self.max_long_term_in_context :]
+        parts: list[str] = []
+        total = 2  # 花括号
+        for key, value in reversed(items):
+            try:
+                fragment = json.dumps({key: value}, ensure_ascii=False)[1:-1]
+            except (TypeError, ValueError):
+                fragment = f'"{key}": {value!r}'
+            if parts and total + len(fragment) + 2 > self.long_term_char_budget:
+                break
+            parts.append(fragment)
+            total += len(fragment) + 2
+        parts.reverse()
+        return "{" + ", ".join(parts) + "}"
 
     # ------------------------------------------------------------------
     # 状态

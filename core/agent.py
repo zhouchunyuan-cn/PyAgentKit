@@ -187,6 +187,33 @@ class Agent(ABC):
             response_format,
         )
 
+    async def think_async(
+        self,
+        user_input: str,
+        context_messages: list[dict[str, Any]] | None = None,
+        use_tools: bool = True,
+        stream_callback: Any = None,
+        events_callback: Any = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
+        """
+        异步执行 ReAct 推理（线程池承载同步引擎）
+
+        适用于 asyncio 程序与多 Agent 并发场景（如 AsyncRouter 的
+        receive_async 中直接 await）。asyncio.to_thread 复制上下文
+        （contextvars），Tracer 追踪与消息链深度在异步路径不丢失。
+        参数含义与 think() 完全一致。
+        """
+        return await asyncio.to_thread(
+            self.think,
+            user_input,
+            context_messages,
+            use_tools,
+            stream_callback,
+            events_callback,
+            response_format,
+        )
+
     # ------------------------------------------------------------------
     # 通信
     # ------------------------------------------------------------------

@@ -21,6 +21,7 @@ ReAct 推理引擎（ReactEngine）
 import json
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,6 +72,9 @@ class ReactEngine:
     memory / system_prompt / name / agent_id / max_steps 等属性。
     token 统计由 engine 内部管理，Agent 的 get_token_usage() 委托读取。
     """
+
+    # 同一步内多个工具调用的最大并发数
+    MAX_PARALLEL_TOOLS = 4
 
     def __init__(self, agent: Any) -> None:
         """
@@ -253,10 +257,9 @@ class ReactEngine:
                 assistant_msg["reasoning_content"] = result.reasoning_content
             messages.append(assistant_msg)
 
-            # 逐个执行工具，把结果作为 tool 消息回传
-            for tc in result.tool_calls:
-                emit_event("tool_call", {"name": tc.name, "arguments": tc.arguments}, step + 1)
-                tool_result = self._execute_tool_safe(tc.name, tc.arguments)
+            # 执行工具，把结果作为 tool 消息回传（同一批多个工具并发执行）
+            tool_results = self._execute_tool_calls(result.tool_calls, step, emit_event)
+            for tc, tool_result in zip(result.tool_calls, tool_results, strict=True):
                 emit_event("tool_result", {"name": tc.name, "result": tool_result}, step + 1)
                 # on_tool_call 钩子
                 self._fire_hook("on_tool_call", agent, tc.name, tc.arguments, tool_result)
@@ -381,6 +384,42 @@ class ReactEngine:
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
+    def _execute_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+        step: int,
+        emit_event: Callable[[str, Any, int], None],
+    ) -> list[Any]:
+        """
+        执行一批工具调用：单个直接执行；多个用线程池并发执行
+
+        结果按提交顺序返回（对话协议里 tool 消息与 tool_calls 一一对应，
+        顺序确定性不受并发影响）。tool_call 事件按序先行宣告，
+        tool_result 事件在结果收集后按序补发。
+
+        Args:
+            tool_calls: 本步的全部工具调用请求
+            step: 当前 ReAct 步数（0 基）
+            emit_event: 结构化事件发射器
+
+        Returns:
+            与 tool_calls 等长、按序对应的结果列表
+        """
+        if not tool_calls:
+            return []
+        for tc in tool_calls:
+            emit_event("tool_call", {"name": tc.name, "arguments": tc.arguments}, step + 1)
+
+        if len(tool_calls) == 1:
+            return [self._execute_tool_safe(tool_calls[0].name, tool_calls[0].arguments)]
+
+        max_workers = min(self.MAX_PARALLEL_TOOLS, len(tool_calls))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="tool") as pool:
+            futures = [
+                pool.submit(self._execute_tool_safe, tc.name, tc.arguments) for tc in tool_calls
+            ]
+            return [f.result() for f in futures]
+
     def _fire_hook(self, hook_name: str, *args, **kwargs) -> None:
         """
         安全触发生命周期钩子
