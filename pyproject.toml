@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyagentkit"
-version = "0.3.0"
+version = "0.4.0"
 description = "轻量级、可扩展的多智能体框架，基于智谱 GLM，支持 ReAct、团队协作、异步路由与声明式编排"
 readme = "README.md"
 requires-python = ">=3.10"

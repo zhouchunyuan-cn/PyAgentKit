@@ -12,6 +12,7 @@ except PackageNotFoundError:  # 未安装为包（如直接从源码运行）
 
 from .agent import Agent
 from .async_router import AsyncRouter
+from .checkpoint import FileCheckpointStore, RunOutcome
 from .collaboration import (
     CapabilityCollaborationStrategy,
     CollaborationStrategy,
@@ -43,6 +44,8 @@ __all__ = [
     "Agent",
     "AgentHooks",
     "AgentStreamEvent",
+    "FileCheckpointStore",
+    "RunOutcome",
     "Message",
     "Router",
     "Memory",

@@ -32,10 +32,11 @@ pyagentkit run configs/team_example.yaml
 | 🤝 **能力驱动协作** | Agent 声明能力，协作策略按能力匹配（不依赖硬编码名字） |
 | ⚡ **并行执行** | 一步内多个工具调用并发执行；Hierarchical 子任务可按成员分组 fan-out（`parallel: true`） |
 | 🌐 **真 MCP 客户端** | 官方协议（initialize/tools/list/call_tool），Streamable HTTP 与 stdio 双传输，工具自动注册 |
+| 💾 **断点续跑（Checkpoint）** | 每步原子落盘；崩溃/暂停后同 run_id 从断点继续，已跑步骤不重复付费；完成态幂等 |
 | 🔗 **异步接口** | `think_async` / `achat` / `achat_stream`，asyncio 程序与多 Agent 并发场景即插即用 |
 | 📋 **YAML 配置** | 声明式编排 Agent / 工具 / 会话 / 团队，零代码定制 |
 | 🖥️ **命令行工具** | `pyagentkit` 命令：交互对话 / 单次提问 / 跑配置 / 列工具 |
-| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、367 个单元测试守护 |
+| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、382 个单元测试守护 |
 
 ## 架构总览
 
@@ -323,6 +324,31 @@ async for chunk in llm.achat_stream(messages): ...
 
 YAML 团队配置加一行即可开启子任务并行：`team: { process: hierarchical, parallel: true }`。
 
+## 断点续跑（Checkpoint）
+
+Team 任务每完成一个成员/子任务即原子落盘；进程崩溃、或主动暂停后，同 run_id 再执行会从断点继续——已完成的步骤（含 Leader 的规划）不会重跑，LLM 不重复付费：
+
+```python
+from core import FileCheckpointStore
+
+team = Team(name="内容组", members=[researcher, writer, reviewer],
+            process=SequentialProcess(),
+            checkpoint_store=FileCheckpointStore(".checkpoints"))
+
+# 崩溃恢复：同 run_id 重跑自动从断点继续；已完成的 run 直接返回缓存结果
+result = team.run("写一份行业分析", run_id="report-101")
+
+# 分步执行（人工审批 / 分段预算）
+outcome = team.run_resumable("写一份行业分析", run_id="report-101", step_limit=1)
+if not outcome.completed:
+    ...  # 检查中间产出，择时续跑
+    outcome = team.run_resumable("写一份行业分析", run_id="report-101")
+print(outcome.result, outcome.steps_done)
+```
+
+Hierarchical 模式续跑会直接复用断点中的任务规划（省一次 Leader 规划调用）；
+任务描述变化时旧检查点自动作废重新开始。
+
 ## 模块清单
 
 | 模块 | 职责 |
@@ -345,6 +371,7 @@ YAML 团队配置加一行即可开启子任务并行：`team: { process: hierar
 | `core/monitor.py` | 系统监控与报告导出 |
 | `core/mcp_tools.py` | MCP 协议工具集成 |
 | `core/mcp_client.py` | 真 MCP 客户端（官方协议，HTTP/stdio，自动发现注册） |
+| `core/checkpoint.py` | 检查点存储与 RunOutcome（Team 断点续跑） |
 | `core/logging_config.py` | 统一日志配置 |
 
 ## 技术栈
@@ -359,7 +386,7 @@ YAML 团队配置加一行即可开启子任务并行：`team: { process: hierar
 ## 测试
 
 ```bash
-pytest tests/                   # 运行全部 367 个测试
+pytest tests/                   # 运行全部 382 个测试
 pytest tests/test_team.py -v    # 运行单个模块
 ```
 
@@ -400,7 +427,7 @@ python mcp_demo.py              # MCP 工具集成
 4. **可观测** — Trace 让每步耗时与 token 清晰可见，复杂协作不黑盒
 5. **安全** — AST 解析替代 eval、文件路径越界检测、敏感文件默认拒读、
    数据库只读白名单、消息跳数防环、异常边界
-6. **可测试** — 核心逻辑有 367 个单元测试守护，依赖可 mock
+6. **可测试** — 核心逻辑有 382 个单元测试守护，依赖可 mock
 
 ## 应用场景
 
