@@ -10,6 +10,7 @@ ReAct 推理循环委托给 ReactEngine（core/react_engine.py），保持对外
 """
 
 import asyncio
+import contextvars
 import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -179,8 +180,13 @@ class Agent(ABC):
 
     def send(
         self, receiver_id: str, content: Any, msg_type: str = "text", metadata: dict | None = None
-    ) -> None:
-        """发送消息给其他 Agent（通过 Router 路由）"""
+    ) -> Message | None:
+        """发送消息给其他 Agent（通过 Router 路由）
+
+        Returns:
+            已路由时返回 None（由路由器负责投递）；未设置 Router 时
+            返回构建好的 Message 交由调用方自行处理
+        """
         message = Message(
             sender=self.agent_id,
             receiver=receiver_id,
@@ -273,7 +279,10 @@ class Agent(ABC):
         异步接收消息（AsyncRouter 优先调用此方法）
 
         默认实现回退到同步 receive()，在阻塞线程池中执行。
+        执行前复制当前上下文（contextvars），使消息跳数继承与 Tracer
+        追踪在执行器线程中依然生效。
         子类可覆盖为真正的 async 实现，以获得并发收益。
         """
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.receive, message)
+        ctx = contextvars.copy_context()
+        await loop.run_in_executor(None, lambda: ctx.run(self.receive, message))

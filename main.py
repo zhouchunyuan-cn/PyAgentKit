@@ -33,7 +33,7 @@ def create_llm_client() -> GLMClient:
     创建共享的 GLM 客户端
 
     API Key 从环境变量 ZHIPUAI_API_KEY 读取，缺失时给出清晰提示。
-    模型默认 glm-4.5，可通过环境变量 GLM_MODEL 切换（如 glm-4.5-air）。
+    模型默认 glm-4-flash，可通过环境变量 GLM_MODEL 切换（如 glm-4.7-flash）。
     """
     if not os.environ.get("ZHIPUAI_API_KEY"):
         print("=" * 60)

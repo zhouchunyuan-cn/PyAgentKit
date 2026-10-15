@@ -304,12 +304,12 @@ class ConfigLoader:
                 )
 
             def receive(self, message):
-                # 配置驱动的 agent 默认走 think 并打印
+                # 配置驱动的 agent 默认走 think 并记录日志（不 print，避免污染 stdout）
                 try:
                     reply = self.think(message.content)
-                    print(f"[{self.name}] {reply}")
+                    logger.info("[%s] %s", self.name, reply)
                 except Exception as e:
-                    print(f"[{self.name}] 处理失败: {e}")
+                    logger.exception("[%s] 处理失败: %s", self.name, e)
 
         agent = _ConfigurableAgent(spec, llm)
 

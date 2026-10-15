@@ -44,33 +44,38 @@ class SharedContext:
 
     def __init__(self, task: str = ""):
         self.task: str = task
-        # 各成员的产出：agent_id -> output
+        # 各成员的最新产出：agent_id -> output（get_output 语义：取最新）
         self.outputs: dict[str, str] = {}
+        # 完整产出日志（按时间顺序）：同一成员多次执行时每次都保留，
+        # 供后续成员与 Leader 汇总看到全部中间产出
+        self.output_log: list[dict[str, str]] = []
         # 任意中间产物（子任务、规划、统计等）
         self.intermediate: dict[str, Any] = {}
         # 执行步骤记录，便于追溯
         self.history: list[dict[str, Any]] = []
 
     def add_output(self, agent_id: str, output: str) -> None:
-        """记录某成员的产出"""
+        """记录某成员的产出（同一成员多次产出会全部保留在日志中）"""
         self.outputs[agent_id] = output
+        self.output_log.append({"agent": agent_id, "output": output})
         self.history.append({"agent": agent_id, "action": "output", "detail": output[:200]})
 
     def get_output(self, agent_id: str) -> str | None:
-        """获取某成员的产出"""
+        """获取某成员的最新产出"""
         return self.outputs.get(agent_id)
 
     def get_all_outputs(self) -> str:
         """
-        拼接所有成员的产出（按记录顺序），作为下一个成员的上下文。
+        拼接所有成员的产出（按产出顺序），作为下一个成员的上下文。
 
-        格式清晰标注每个产出来自谁，便于 LLM 理解。
+        同一成员的多次产出（Hierarchical 中多个子任务命中同一成员）都会
+        出现，格式清晰标注每个产出来自谁，便于 LLM 理解。
         """
-        if not self.outputs:
+        if not self.output_log:
             return ""
         lines = []
-        for agent_id, output in self.outputs.items():
-            lines.append(f"【{agent_id} 的产出】\n{output}")
+        for entry in self.output_log:
+            lines.append(f"【{entry['agent']} 的产出】\n{entry['output']}")
         return "\n\n".join(lines)
 
     def add_intermediate(self, key: str, value: Any) -> None:
@@ -90,7 +95,7 @@ class SharedContext:
         """上下文摘要"""
         return {
             "task": self.task,
-            "output_count": len(self.outputs),
+            "output_count": len(self.output_log),
             "output_agents": list(self.outputs.keys()),
             "intermediate_keys": list(self.intermediate.keys()),
             "history_steps": len(self.history),

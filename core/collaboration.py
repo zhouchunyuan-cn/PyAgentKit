@@ -99,7 +99,8 @@ class CapabilityCollaborationStrategy(CollaborationStrategy):
                               None 则取参与列表中的第一个
         """
         super().__init__(name, description)
-        self.required_capabilities = required_capabilities
+        # 拷贝入参列表，避免调用方修改列表影响策略匹配
+        self.required_capabilities = list(required_capabilities)
         self.entry_capability = entry_capability
 
     def should_collaborate(self, task: dict[str, Any], agents: list[Agent]) -> list[Agent]:
@@ -141,7 +142,7 @@ class CapabilityCollaborationStrategy(CollaborationStrategy):
 
 
 class ResearchCollaborationStrategy(CapabilityCollaborationStrategy):
-    """研究任务协作策略（需要 search + write 能力，search 为入口）"""
+    """研究任务协作策略（具备 search 或 write 任一能力的 Agent 参与，search 能力优先作为入口）"""
 
     def __init__(self):
         super().__init__(
@@ -272,21 +273,26 @@ class DynamicCollaborationManager:
             content=task_description,
             msg_type=msg_type,
         )
-        self.router.route_message(message)
-        logger.info(
-            "协作已启动：任务类型=%s，入口=%s，参与=%s",
-            task_type,
-            entry_agent.agent_id,
-            [a.agent_id for a in collaborating_agents],
-        )
-        return True
+        delivered = self.router.route_message(message)
+        if delivered:
+            logger.info(
+                "协作已启动：任务类型=%s，入口=%s，参与=%s",
+                task_type,
+                entry_agent.agent_id,
+                [a.agent_id for a in collaborating_agents],
+            )
+        else:
+            logger.warning(
+                "协作启动消息投递失败（入口 Agent 处理异常或不存在）：入口=%s",
+                entry_agent.agent_id,
+            )
+        # 投递结果如实返回：入口 Agent 崩溃时调用方不应看到"成功"
+        return delivered
 
     def get_collaboration_stats(self) -> dict[str, Any]:
-        """获取协作统计信息"""
+        """获取协作统计信息（内部列表已拷贝，修改返回值不影响内部状态）"""
         return {
             "strategy_count": len(self.strategies),
             "task_history_count": len(self.task_history),
-            "recent_tasks": self.task_history[-5:]
-            if len(self.task_history) > 5
-            else self.task_history,
+            "recent_tasks": [dict(t) for t in self.task_history[-5:]],
         }

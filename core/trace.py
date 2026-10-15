@@ -5,7 +5,10 @@
 解决之前"复杂协作是黑盒、无 per-step 延迟与 token 归属"的问题。
 
 设计：
-- Tracer：单例，线程局部存储当前 trace；通过 enable/disable 开关，默认关闭
+- Tracer：单例，基于 contextvars 保存当前 trace；通过 enable/disable 开关，
+  默认关闭。contextvars 使追踪上下文可跨 asyncio 任务传播，也可随
+  copy_context() 进入执行器线程（AsyncRouter 的 receive 默认实现即如此），
+  异步路径下不再丢失 span。
 - TraceSpan：一段命名的执行区间（如某次 think、某个子任务），含 start/end/duration
 - Trace：一次完整执行的所有 span，可导出为可读文本或 JSON
 
@@ -22,11 +25,14 @@
     print(trace.format_text())
 """
 
-import threading
+import contextvars
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,10 +48,10 @@ class TraceSpan:
         parent_id: 父 span id（构建嵌套关系，如 think 内的工具调用）
     """
 
-    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    name: str = ""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
     start: float = 0.0
     end: float | None = None
+    name: str = ""
     attributes: dict[str, Any] = field(default_factory=dict)
     parent_id: str | None = None
 
@@ -141,16 +147,33 @@ class Trace:
         }
 
 
+@dataclass
+class _TraceState:
+    """某个执行上下文中的活跃追踪状态（trace + span 栈）"""
+
+    trace: Trace
+    stack: list[str] = field(default_factory=list)
+    warned_cap: bool = False  # span 上限告警只发一次
+
+
 class Tracer:
     """
-    全局追踪器（线程局部）
+    全局追踪器（基于 contextvars）
 
     通过 enable()/disable() 开关。未启用时所有记录方法零开销（早返回），
     不影响生产性能。
+
+    上下文传播：活跃 trace 保存在 ContextVar 中——同一 asyncio 任务树
+    自动共享；执行器线程需通过 contextvars.copy_context() 显式带入
+    （Agent.receive_async 默认实现已处理）。
     """
 
     _enabled = False
-    _local = threading.local()
+    # 单个 trace 的 span 数上限（防长驻任务无限累积）
+    MAX_SPANS = 10_000
+    _state_var: contextvars.ContextVar[_TraceState | None] = contextvars.ContextVar(
+        "pyagentkit_trace_state", default=None
+    )
 
     @classmethod
     def enable(cls) -> None:
@@ -168,12 +191,16 @@ class Tracer:
 
     @classmethod
     def start_trace(cls, name: str) -> Trace | None:
-        """开始一个新的 trace（成为当前线程的活跃 trace）"""
+        """开始一个新的 trace（成为当前上下文的活跃 trace）"""
         if not cls._enabled:
             return None
+        old = cls._state_var.get()
+        if old is not None:
+            # 上一条 trace 未结束就开新 trace：先收尾，避免孤儿 trace
+            logger.warning("上一条 trace '%s' 未结束，已被新 trace 接替", old.trace.name)
+            old.trace.ended_at = time.time()
         trace = Trace(name=name)
-        cls._local.current_trace = trace
-        cls._local.span_stack = []
+        cls._state_var.set(_TraceState(trace=trace))
         return trace
 
     @classmethod
@@ -181,36 +208,45 @@ class Tracer:
         """结束当前 trace 并返回"""
         if not cls._enabled:
             return None
-        trace: Trace | None = getattr(cls._local, "current_trace", None)
-        if trace is not None:
-            trace.ended_at = time.time()
-            cls._local.current_trace = None
-            cls._local.span_stack = []
-        return trace
+        state = cls._state_var.get()
+        if state is not None:
+            state.trace.ended_at = time.time()
+            cls._state_var.set(None)
+            return state.trace
+        return None
 
     @classmethod
     def current_trace(cls) -> Trace | None:
-        return getattr(cls._local, "current_trace", None)
+        state = cls._state_var.get()
+        return state.trace if state is not None else None
 
     @classmethod
     def start_span(cls, name: str, **attributes) -> TraceSpan | None:
         """开始一个 span（自动加到当前 trace）"""
         if not cls._enabled:
             return None
-        trace = cls.current_trace()
-        if trace is None:
+        state = cls._state_var.get()
+        if state is None:
             return None
-        stack: list[str] = getattr(cls._local, "span_stack", [])
-        parent = stack[-1] if stack else None
+        if len(state.trace.spans) >= cls.MAX_SPANS:
+            # 超上限后丢弃新 span（只告警一次），防内存无限增长
+            if not state.warned_cap:
+                state.warned_cap = True
+                logger.warning(
+                    "trace '%s' 的 span 数达到上限 %d，后续 span 将不被记录",
+                    state.trace.name,
+                    cls.MAX_SPANS,
+                )
+            return None
+        parent = state.stack[-1] if state.stack else None
         span = TraceSpan(
             name=name,
             start=time.time(),
             parent_id=parent,
             attributes=dict(attributes),
         )
-        trace.add_span(span)
-        stack.append(span.id)
-        cls._local.span_stack = stack
+        state.trace.add_span(span)
+        state.stack.append(span.id)
         return span
 
     @classmethod
@@ -221,18 +257,23 @@ class Tracer:
         span.finish()
         for k, v in extra_attributes.items():
             span.set(k, v)
-        stack: list[str] = getattr(cls._local, "span_stack", [])
-        if span.id in stack:
-            stack.remove(span.id)
-            cls._local.span_stack = stack
+        state = cls._state_var.get()
+        if state is not None and span.id in state.stack:
+            # 从栈顶方向找第一个同 id 的项移除（正确的嵌套弹栈）
+            for i in range(len(state.stack) - 1, -1, -1):
+                if state.stack[i] == span.id:
+                    del state.stack[i]
+                    break
 
     @classmethod
     def record(cls, name: str, duration: float | None = None, **attributes) -> None:
         """记录一个即时 span（已有耗时，无需 start/end 配对）"""
         if not cls._enabled:
             return
-        trace = cls.current_trace()
-        if trace is None:
+        state = cls._state_var.get()
+        if state is None:
+            return
+        if len(state.trace.spans) >= cls.MAX_SPANS:
             return
         now = time.time()
         span = TraceSpan(
@@ -241,4 +282,4 @@ class Tracer:
             end=now,
             attributes=dict(attributes),
         )
-        trace.add_span(span)
+        state.trace.add_span(span)

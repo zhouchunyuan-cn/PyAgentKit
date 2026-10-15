@@ -102,7 +102,7 @@ def cmd_chat(args):
     setup_logging()
     from core.tool_factory import default_factory
 
-    tools = default_factory.create_many(args.tools) if args.tools else None
+    tools = default_factory.create_many(_split_tool_names(args.tools)) or None
     agent = _default_agent(args.model, tools)
     session = ConversationSession(agent, max_history=args.max_history)
     _interactive_loop(session)
@@ -114,7 +114,7 @@ def cmd_ask(args):
     setup_logging()
     from core.tool_factory import default_factory
 
-    tools = default_factory.create_many(args.tools) if args.tools else None
+    tools = default_factory.create_many(_split_tool_names(args.tools)) or None
     agent = _default_agent(args.model, tools)
     session = ConversationSession(agent, max_history=2)
 
@@ -194,8 +194,38 @@ def cmd_list_tools(args):
 # --------------------------------------------------------------------
 
 
+def _split_tool_names(values: list[str] | None) -> list[str]:
+    """把 --tools 的值拆开：支持空格分隔与逗号分隔两种写法"""
+    if not values:
+        return []
+    return [t for v in values for t in v.split(",") if t.strip()]
+
+
+class _HintArgumentParser(argparse.ArgumentParser):
+    """
+    带定向提示的参数解析器
+
+    argparse 的多值参数 --tools（nargs="*"）会贪婪吞掉其后的所有 token，
+    导致 `pyagentkit ask --tools web_search "问题"` 报"缺少 question"。
+    这里在该错误发生时给出针对性提示（把问题放前面，或用逗号单值语法）。
+    """
+
+    def error(self, message):
+        if "the following arguments are required: question" in message:
+            self.print_usage(sys.stderr)
+            self.exit(
+                2,
+                f"错误: {message}\n"
+                "提示: --tools 是多值参数，会把它后面的内容都当成工具名。\n"
+                "请把问题放在 --tools 前面，或改用逗号分隔的单值写法：\n"
+                '  pyagentkit ask "你的问题" --tools web_search calculator\n'
+                '  pyagentkit ask --tools=web_search,calculator "你的问题"\n',
+            )
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _HintArgumentParser(
         prog="pyagentkit",
         description="PyAgentKit 命令行 —— 基于 GLM 的多 Agent 框架",
     )
@@ -212,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask = sub.add_parser("ask", help="单次提问")
     p_ask.add_argument("question", help="提问内容")
     p_ask.add_argument("--model", default="glm-4-flash", help="LLM 模型名")
-    p_ask.add_argument("--tools", nargs="*", help="启用的工具")
+    p_ask.add_argument("--tools", nargs="*", help="启用的工具（多值；也可用 --tools=a,b 逗号分隔）")
     p_ask.set_defaults(func=cmd_ask)
 
     # run
@@ -233,7 +263,7 @@ def main(argv=None):
 
     if not getattr(args, "func", None):
         parser.print_help()
-        sys.exit(0)
+        sys.exit(2)  # 未提供子命令视为用法错误，按惯例非零退出
 
     args.func(args)
 

@@ -29,7 +29,6 @@ class AgentMonitor:
             router: 路由器实例
         """
         self.router = router
-        self.monitoring_data: dict[str, list[dict[str, Any]]] = {}
         self.is_monitoring = False
 
     def start_monitoring(self) -> None:
@@ -37,14 +36,14 @@ class AgentMonitor:
         开始监控
         """
         self.is_monitoring = True
-        print("Agent监控系统已启动")
+        logger.info("Agent监控系统已启动")
 
     def stop_monitoring(self) -> None:
         """
         停止监控
         """
         self.is_monitoring = False
-        print("Agent监控系统已停止")
+        logger.info("Agent监控系统已停止")
 
     def get_agent_status(self, agent_id: str) -> dict[str, Any] | None:
         """

@@ -54,6 +54,9 @@ class ReactEngine:
         self.agent = agent
         # token 用量累计（每次 think 累加），供 Agent.get_token_usage() 读取
         self._token_usage = TokenUsage()
+        # 交互序号：KV 快照 key 用递增序号而非"当前条数"，
+        # 避免短期记忆过期收缩后 key 碰撞互相覆盖
+        self._interaction_seq = 0
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -115,6 +118,8 @@ class ReactEngine:
         _span = Tracer.start_span(
             f"think:{agent.name}", agent=agent.agent_id, input_preview=user_input[:50]
         )
+        # 本次 think 的 token 差值基线（trace 里记录本次用量而非历史累计值）
+        _tokens_at_start = self._token_usage.total_tokens
 
         # 2. ReAct 循环
         for step in range(agent.max_steps):
@@ -128,7 +133,14 @@ class ReactEngine:
                 # on_error 钩子
                 self._fire_hook("on_error", agent, e, f"第{step + 1}步 LLM 调用失败")
                 partial = self._recover_from_llm_error(
-                    messages, user_input, stream_callback, _span, step, tools
+                    messages,
+                    user_input,
+                    stream_callback,
+                    _span,
+                    step,
+                    tools,
+                    caller_manages_history=context_messages is not None,
+                    tokens_at_start=_tokens_at_start,
                 )
                 if partial is not None:
                     return partial
@@ -152,7 +164,11 @@ class ReactEngine:
                 self._remember_interaction(
                     user_input, final_text, caller_manages_history=context_messages is not None
                 )
-                Tracer.end_span(_span, steps=step + 1, total_tokens=self._token_usage.total_tokens)
+                Tracer.end_span(
+                    _span,
+                    steps=step + 1,
+                    total_tokens=self._token_usage.total_tokens - _tokens_at_start,
+                )
                 # on_think_end 钩子
                 self._fire_hook("on_think_end", agent, final_text)
                 return final_text
@@ -203,7 +219,11 @@ class ReactEngine:
         self._remember_interaction(
             user_input, final_text, caller_manages_history=context_messages is not None
         )
-        Tracer.end_span(_span, steps=agent.max_steps, total_tokens=self._token_usage.total_tokens)
+        Tracer.end_span(
+            _span,
+            steps=agent.max_steps,
+            total_tokens=self._token_usage.total_tokens - _tokens_at_start,
+        )
         # on_think_end 钩子
         self._fire_hook("on_think_end", agent, final_text)
         return final_text
@@ -235,6 +255,8 @@ class ReactEngine:
         _span: Any,
         failed_step: int,
         tools: Any,
+        caller_manages_history: bool = False,
+        tokens_at_start: int = 0,
     ) -> str | None:
         """
         LLM 调用失败时的优雅降级
@@ -259,9 +281,13 @@ class ReactEngine:
             final_text = final.content
             if stream_callback is not None and final_text:
                 _emit_via_callback(final_text, stream_callback)
-            self._remember_interaction(user_input, final_text)
+            # 与正常路径一致：外部 Session 管理历史时不再写入会话通道，避免重复
+            self._remember_interaction(user_input, final_text, caller_manages_history)
             Tracer.end_span(
-                _span, steps=failed_step + 1, total_tokens=self._token_usage.total_tokens, recovered=True
+                _span,
+                steps=failed_step + 1,
+                total_tokens=self._token_usage.total_tokens - tokens_at_start,
+                recovered=True,
             )
             return final_text
         except Exception:
@@ -346,9 +372,10 @@ class ReactEngine:
             # 会话通道：记录本轮（仅在无外部 Session 管理历史时）
             agent.brain.record_turn("user", user_input)
             agent.brain.record_turn("assistant", response)
-        # KV 通道：保留交互快照（向后兼容）
+        # KV 通道：保留交互快照（向后兼容）；key 用递增序号防碰撞
+        self._interaction_seq += 1
         agent.brain.remember(
-            f"interaction:{len(agent.memory.list_short_term_memory())}",
+            f"interaction:{self._interaction_seq}",
             {"input": user_input, "response": response},
             memory_type="short",
         )

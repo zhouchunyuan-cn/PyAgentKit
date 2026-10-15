@@ -158,7 +158,12 @@ class MemoryManager:
         # 2. 长期记忆（KV）
         long_term = self.memory.list_long_term_memory()
         if long_term:
-            memory_brief = json.dumps(long_term, ensure_ascii=False)
+            try:
+                memory_brief = json.dumps(long_term, ensure_ascii=False)
+            except (TypeError, ValueError):
+                # 兜底：个别值不可序列化（如未开持久化时存入了任意对象），
+                # 降级为 repr 展示而不是让整个上下文组装失败
+                memory_brief = repr(long_term)
             messages.append(
                 {
                     "role": "system",

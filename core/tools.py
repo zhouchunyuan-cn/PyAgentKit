@@ -296,21 +296,27 @@ class WebSearchTool(HttpTool):
         解析 DuckDuckGo Lite 结果页，提取多条结果
 
         用 DuckDuckGo Lite 版本（lite.duckduckgo.com），它的结果是纯 HTML 表格，
-        结构稳定且对非浏览器 UA 友好。用正则提取链接与文本，无需额外 HTML 解析库。
+        结构稳定且对非浏览器 UA 友好。用正则提取链接、标题与摘要文本，
+        无需额外 HTML 解析库。
         """
         encoded_query = urllib.parse.quote(query)
         url = f"https://lite.duckduckgo.com/lite/?q={encoded_query}"
         html = self._http_get(url, headers={"User-Agent": "Mozilla/5.0 (PyAgentKit web search)"})
 
         results: list[dict[str, str]] = []
-        # Lite 页结构：<a rel="nofollow" href="//duckduckgo.com/l/?uddg=<真实URL>">标题文本</a>
-        # 后面同行的 td 含摘要文本。用正则逐个结果块提取。
+        # Lite 页结构：结果链接在 <a rel="nofollow" href="//duckduckgo.com/l/?uddg=<真实URL>">标题</a>，
+        # 其后一行的 <td class="result-snippet">…</td> 是摘要。
         link_re = re.compile(
             r'href="//duckduckgo\.com/l/\?uddg=([^"&]+)[^"]*"[^>]*>(.*?)</a>',
             re.DOTALL,
         )
-        for m in link_re.finditer(html):
-            encoded_url, raw_title = m.group(1), m.group(2)
+        snippet_re = re.compile(
+            r'class="result-snippet"[^>]*>(.*?)</td>',
+            re.DOTALL,
+        )
+        links = link_re.findall(html)
+        snippets = [self._strip_html(s) for s in snippet_re.findall(html)]
+        for i, (encoded_url, raw_title) in enumerate(links):
             title = self._strip_html(raw_title)
             # uddg 参数值是 URL 编码的真实地址
             clean_url = urllib.parse.unquote(encoded_url)
@@ -318,7 +324,9 @@ class WebSearchTool(HttpTool):
             if clean_url.endswith("y.js") or "duckduckgo.com/y.js" in clean_url:
                 continue
             if title:
-                results.append({"title": title, "snippet": title, "url": clean_url})
+                # 摘要与链接按顺序配对；缺失时退化为标题文本
+                snippet = snippets[i] if i < len(snippets) and snippets[i] else title
+                results.append({"title": title, "snippet": snippet, "url": clean_url})
 
         return results
 
@@ -334,7 +342,15 @@ class WebSearchTool(HttpTool):
 class CalculatorTool(Tool):
     """
     计算器工具 - 使用安全的表达式解析器
+
+    防护：AST 白名单解析（非 eval）、表达式长度上限、幂运算指数上限
+    （防 `9**9**9` 这类合法语法造成的超大数计算挂死进程）。
     """
+
+    # 幂运算指数绝对值上限；超出报错（10^10000 量级以内的幂都能瞬间算完）
+    MAX_EXPONENT = 10_000
+    # 表达式最大长度（字符数）
+    MAX_EXPR_LENGTH = 1000
 
     def __init__(self):
         super().__init__(
@@ -376,6 +392,10 @@ class CalculatorTool(Tool):
         # 预处理表达式，移除空格
         expr = re.sub(r"\s+", "", expr)
 
+        # 长度上限：防超长表达式本身的解析/计算开销
+        if len(expr) > self.MAX_EXPR_LENGTH:
+            raise ValueError(f"表达式过长（超过 {self.MAX_EXPR_LENGTH} 字符）")
+
         # 验证表达式只包含允许的字符
         if not re.match(r"^[0-9+\-*/().% ]+$", expr):
             raise ValueError("表达式包含不允许的字符")
@@ -402,6 +422,9 @@ class CalculatorTool(Tool):
             op = self.operators.get(type(node.op))
             if op is None:
                 raise ValueError(f"不支持的操作符: {type(node.op)}")
+            if isinstance(node.op, ast.Pow) and abs(right) > self.MAX_EXPONENT:
+                # 防 DoS：`9**9**9` 等嵌套幂会产生天文数字级别的计算量
+                raise ValueError(f"幂运算指数过大（|{right}| > {self.MAX_EXPONENT}），已拒绝")
             return op(left, right)
         elif isinstance(node, ast.UnaryOp):
             operand = self._eval_node(node.operand)
@@ -432,18 +455,40 @@ class CalculatorTool(Tool):
 class FileReadTool(Tool):
     """
     文件读取工具
+
+    安全默认值：
+    - 路径必须位于 allowed_dir 内（realpath 前缀检查，防 ../ 越界）
+    - 默认拒绝隐藏文件/目录（点开头，如 .env/.git）与常见密钥文件
+      （*.pem、*.key、id_rsa* 等），防止 LLM 读走 API Key 等敏感信息；
+      需要读取时显式传 allow_sensitive=True
+    - 单文件读取有大小上限，防止超大文件撑爆内存
     """
 
-    def __init__(self, allowed_dir: str = "."):
+    # 敏感文件名模式（不依赖隐藏属性也拒绝）
+    _SENSITIVE_PATTERNS = (
+        "*.pem",
+        "*.key",
+        "*.keystore",
+        "id_rsa*",
+        "id_ed25519*",
+        "credentials*",
+        "*secret*",
+    )
+
+    def __init__(
+        self, allowed_dir: str = ".", allow_sensitive: bool = False, max_bytes: int = 2_000_000
+    ):
         """
         初始化文件读取工具
 
         Args:
             allowed_dir: 允许读取的根目录（默认当前目录），路径越界将被拒绝
+            allow_sensitive: 是否允许读取隐藏文件与敏感文件（默认拒绝）
+            max_bytes: 单文件最大读取字节数，超出截断
         """
         super().__init__(
             "file_read",
-            "读取指定文本文件的内容，仅允许访问工作目录内的文件。",
+            "读取指定文本文件的内容，仅允许访问工作目录内的非隐藏文件。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -456,6 +501,19 @@ class FileReadTool(Tool):
             },
         )
         self.allowed_dir = os.path.realpath(allowed_dir)
+        self.allow_sensitive = allow_sensitive
+        self.max_bytes = max_bytes
+
+    def _is_sensitive(self, rel_path: str) -> bool:
+        """判断相对路径是否命中敏感规则（隐藏组件或敏感文件名）"""
+        parts = rel_path.split(os.sep)
+        # 任意一级路径组件以点开头（.env、.git、.idea …）
+        if any(part.startswith(".") for part in parts if part not in (".", "..")):
+            return True
+        name = parts[-1].lower()
+        import fnmatch
+
+        return any(fnmatch.fnmatch(name, pat) for pat in self._SENSITIVE_PATTERNS)
 
     def run(self, path: str) -> dict[str, Any]:
         """
@@ -475,8 +533,17 @@ class FileReadTool(Tool):
             ):
                 raise ValueError("不允许访问该路径（超出工作目录范围）")
 
+            # 敏感文件检查：默认拒绝 .env / 密钥等，防 LLM 读走机密
+            if not self.allow_sensitive:
+                rel_path = os.path.relpath(real_path, self.allowed_dir)
+                if self._is_sensitive(rel_path):
+                    raise ValueError(
+                        "不允许读取隐藏或敏感文件（如 .env、密钥文件）；"
+                        "如确需读取请在构造 FileReadTool 时设置 allow_sensitive=True"
+                    )
+
             with open(real_path, encoding="utf-8") as f:
-                content = f.read()
+                content = f.read(self.max_bytes)
             return {"path": path, "content": content}
         except Exception as e:
             return {"path": path, "error": str(e)}
@@ -494,6 +561,9 @@ class DatabaseTool(Tool):
 
     # SELECT 开头的关键词，用于判断是查询还是执行
     _READ_KEYWORDS = ("select", "with", "explain", "pragma")
+    # 只读模式下的严格白名单：WITH 可携带 DELETE/INSERT（写语义），
+    # PRAGMA 可修改库状态（如 writable_schema），只读模式下均不放行
+    _READONLY_KEYWORDS = ("select", "explain")
 
     def __init__(self, db_path: str = ":memory:", readonly: bool = False):
         """
@@ -547,6 +617,13 @@ class DatabaseTool(Tool):
             # 加锁保证并发安全（同一连接不支持真正的并发写入）
             with self._lock:
                 if is_query:
+                    if self.readonly and not any(
+                        normalized.startswith(k) for k in self._READONLY_KEYWORDS
+                    ):
+                        return {
+                            "query": query,
+                            "error": "只读模式下不允许执行该语句（WITH/PRAGMA 可能包含写操作）",
+                        }
                     cur = self._conn.execute(query)
                     rows = [dict(r) for r in cur.fetchall()]
                     columns = [d[0] for d in cur.description] if cur.description else []

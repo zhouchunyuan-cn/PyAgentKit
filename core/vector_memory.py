@@ -8,13 +8,17 @@
 - Embedder 可注入（默认 LocalTfidfEmbedder，零成本离线可用；
   充值后可换 GLMEmbedder 获得更强语义效果）
 - 相似度计算用 numpy + sklearn cosine，零新增重依赖（均为已装库）
-- 支持持久化（可选）：保存记忆条目到 JSON，向量在加载时重新生成
+- 支持持久化（可选）：保存记忆条目到 JSON（原子写入），向量在加载时重新生成
+- 线程安全：写入/检索/持久化均持锁，AsyncRouter 执行器线程并发访问安全
 """
 
+import contextlib
 import json
 import logging
 import os
 import re
+import tempfile
+import threading
 import uuid
 from typing import Any, Protocol
 
@@ -132,13 +136,16 @@ _ZH_STOP_WORDS = frozenset(
 
 def _tokenize(text: str) -> list[str]:
     """
-    轻量分词：中文按字、英文按词。
+    轻量分词：中文按字、英文按词、数字串按整体。
 
     不依赖 jieba，保证零额外依赖；对召回质量影响有限但够用。
+    数字作为整体 token 保留（"错误码 404" 与 "错误码 500" 因此可区分）。
     """
     tokens = []
     # 英文单词
     tokens.extend(re.findall(r"[a-zA-Z]+", text.lower()))
+    # 数字串（整体保留，不做逐位切分）
+    tokens.extend(re.findall(r"\d+", text))
     # 中文字符（逐字）
     tokens.extend(re.findall(r"[\u4e00-\u9fa5]", text))
     return [t for t in tokens if t not in _ZH_STOP_WORDS]
@@ -152,34 +159,58 @@ class LocalTfidfEmbedder:
     劣势：语义理解弱于神经网络 embedding（无法识别同义/推理关系），
           仅基于词项重叠。充值 embedding-3 后建议换 GLMEmbedder。
 
-    注意：TF-IDF 需要语料来学习 IDF 权重。本实现采用【增量拟合 + 回退】策略：
-    首次 embed 时用该文本自身拟合；后续文本用已学词表转换，新词忽略。
-    这是一种工程妥协，保证零依赖下的可用性。
+    拟合策略：
+    - 首次 embed 时用该文本自身拟合，建立词表与 IDF；
+    - 之后 embed 只做 transform（新词忽略，维度固定）；
+    - 记忆库增删条目时由 VectorMemory 调用 fit_corpus 以完整语料重拟合，
+      保证 IDF 与当前记忆集一致。每次 add 只做一次重拟合 + N 次轻量 transform。
     """
 
     def __init__(self):
         self._vectorizer: TfidfVectorizer | None = None
         self._corpus: list[str] = []
+        self._corpus_set: set[str] = set()
         self._fitted = False
 
-    def _ensure_fitted(self, texts: list[str]) -> None:
-        """用给定文本拟合 TF-IDF（仅在首次或语料扩充时）"""
-        all_texts = self._corpus + [t for t in texts if t not in self._corpus]
-        self._corpus = all_texts
+    def _refit(self) -> None:
+        """用当前语料重建 vectorizer 并拟合"""
         self._vectorizer = TfidfVectorizer(
             tokenizer=_tokenize,
             token_pattern=None,  # 用自定义 tokenizer 时禁用默认 pattern
         )
         try:
-            self._vectorizer.fit(all_texts)
+            self._vectorizer.fit(self._corpus)
             self._fitted = True
         except ValueError:
             # 语料全为空或分词后无有效 token 时，fit 会失败
             self._fitted = False
 
+    def _ensure_fitted(self, texts: list[str]) -> None:
+        """把新文本并入语料后重拟合（幂等：语料无变化时不重拟合）"""
+        new_texts = [t for t in texts if t not in self._corpus_set]
+        if self._fitted and not new_texts:
+            return
+        self._corpus.extend(new_texts)
+        self._corpus_set.update(new_texts)
+        self._refit()
+
+    def fit_corpus(self, texts: list[str]) -> None:
+        """
+        用给定文本【整体替换】语料并重拟合
+
+        供记忆库在增删条目后同步 IDF：既能吸收新文本，也能让已删除
+        文本不再影响 IDF 权重。语料与当前一致时幂等（不重拟合）。
+        """
+        new_corpus = list(texts)
+        if self._fitted and new_corpus == self._corpus:
+            return
+        self._corpus = new_corpus
+        self._corpus_set = set(new_corpus)
+        self._refit()
+
     def embed(self, text: str) -> list[float]:
-        """将文本转为 TF-IDF 向量（会扩展词表，用于存入记忆）"""
-        if not self._fitted or text.strip():
+        """将文本转为 TF-IDF 向量（不扩展词表，新词忽略）"""
+        if not self._fitted:
             self._ensure_fitted([text])
 
         if not self._fitted or self._vectorizer is None:
@@ -235,11 +266,13 @@ class VectorMemory:
         self.persistence_path = persistence_path
         self.min_similarity = min_similarity
 
-        # 条目存储：id -> {"text", "metadata", "vector"}
+        # 条目存储：id -> {"text", "metadata"}
         self._items: dict[str, dict[str, Any]] = {}
         # 缓存向量矩阵与对应 id 顺序，加速相似度计算
         self._ids_in_order: list[str] = []
         self._matrix: np.ndarray | None = None
+        # 保护条目/矩阵/持久化的并发访问
+        self._lock = threading.RLock()
 
         if persistence_path:
             self._load()
@@ -256,37 +289,39 @@ class VectorMemory:
         Args:
             text: 记忆文本（召回时基于它的语义）
             metadata: 附加元数据（如来源、时间、topic）
-            item_id: 自定义 id，None 则自动生成
+            item_id: 自定义 id，None 则自动生成；重复 id 视为覆盖更新
 
         Returns:
             这条记忆的 id
         """
         item_id = item_id or str(uuid.uuid4())
+        with self._lock:
+            if item_id in self._items:
+                # 覆盖更新：同步移除旧的顺序记录，避免 count 与矩阵行数错位
+                self._ids_in_order.remove(item_id)
+                logger.debug("向量记忆 id '%s' 已存在，执行覆盖更新", item_id)
+            self._items[item_id] = {
+                "text": text,
+                "metadata": metadata or {},
+            }
+            self._ids_in_order.append(item_id)
+            self._recompute_all_vectors()
 
-        # 增量型 embedder（如 LocalTfidfEmbedder）的词表会随语料增长而变化，
-        # 新增文本后已有条目的向量需重新计算，否则向量空间不一致导致相似度失真。
-        # 对固定词表的 embedder（如 GLMEmbedder）重算也无害，统一处理。
-        self._items[item_id] = {
-            "text": text,
-            "metadata": metadata or {},
-        }
-        self._ids_in_order.append(item_id)
-        self._recompute_all_vectors()
-
-        if self.persistence_path:
-            self._save()
+            if self.persistence_path:
+                self._save()
         return item_id
 
     def delete(self, item_id: str) -> bool:
         """删除一条记忆"""
-        if item_id not in self._items:
-            return False
-        del self._items[item_id]
-        self._ids_in_order = [i for i in self._ids_in_order if i != item_id]
-        self._recompute_all_vectors()
-        if self.persistence_path:
-            self._save()
-        return True
+        with self._lock:
+            if item_id not in self._items:
+                return False
+            del self._items[item_id]
+            self._ids_in_order = [i for i in self._ids_in_order if i != item_id]
+            self._recompute_all_vectors()
+            if self.persistence_path:
+                self._save()
+            return True
 
     # ------------------------------------------------------------------
     # 语义召回
@@ -308,40 +343,46 @@ class VectorMemory:
         Returns:
             命中条目列表（按相似度降序），每项含 id/text/metadata/similarity
         """
-        if not self._items:
-            return []
+        with self._lock:
+            if not self._items:
+                return []
 
-        threshold = self.min_similarity if min_similarity is None else min_similarity
-        # 查询向量化：增量型 embedder 必须用固定词表转换，保证维度与库一致
-        embedder = self.embedder
-        if isinstance(embedder, LocalTfidfEmbedder):
-            query_vec = np.array(embedder.transform(query)).reshape(1, -1)
-        else:
-            query_vec = np.array(embedder.embed(query)).reshape(1, -1)
+            # 矩阵与条目不一致（异常路径遗留）时重建，保证索引安全
+            if self._matrix is None or self._matrix.shape[0] != len(self._ids_in_order):
+                self._recompute_all_vectors()
 
-        # 计算查询向量与所有条目的余弦相似度
-        sims = cosine_similarity(query_vec, self._matrix)[0]  # shape: (n,)
+            threshold = self.min_similarity if min_similarity is None else min_similarity
+            # 查询向量化：增量型 embedder 必须用固定词表转换，保证维度与库一致
+            embedder = self.embedder
+            if isinstance(embedder, LocalTfidfEmbedder):
+                query_vec = np.array(embedder.transform(query)).reshape(1, -1)
+            else:
+                query_vec = np.array(embedder.embed(query)).reshape(1, -1)
 
-        # 组装结果并按相似度降序
-        scored: list[tuple[float, str]] = [
-            (float(sims[idx]), self._ids_in_order[idx]) for idx in range(len(self._ids_in_order))
-        ]
-        scored.sort(key=lambda x: x[0], reverse=True)
+            # 计算查询向量与所有条目的余弦相似度
+            sims = cosine_similarity(query_vec, self._matrix)[0]  # shape: (n,)
 
-        results = []
-        for sim, item_id in scored[:top_k]:
-            if sim < threshold:
-                continue
-            item = self._items[item_id]
-            results.append(
-                {
-                    "id": item_id,
-                    "text": item["text"],
-                    "metadata": item["metadata"],
-                    "similarity": sim,
-                }
-            )
-        return results
+            # 组装结果并按相似度降序
+            scored: list[tuple[float, str]] = [
+                (float(sims[idx]), self._ids_in_order[idx])
+                for idx in range(len(self._ids_in_order))
+            ]
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            results = []
+            for sim, item_id in scored[:top_k]:
+                if sim < threshold:
+                    continue
+                item = self._items[item_id]
+                results.append(
+                    {
+                        "id": item_id,
+                        "text": item["text"],
+                        "metadata": item["metadata"],
+                        "similarity": sim,
+                    }
+                )
+            return results
 
     def recall_semantic(self, query: str, top_k: int = 3) -> list[str]:
         """
@@ -361,64 +402,106 @@ class VectorMemory:
     # ------------------------------------------------------------------
     def count(self) -> int:
         """返回记忆条目数"""
-        return len(self._items)
+        with self._lock:
+            return len(self._items)
 
     def clear(self) -> None:
         """清空所有记忆"""
-        self._items.clear()
-        self._ids_in_order.clear()
-        self._matrix = None
-        if self.persistence_path:
-            self._save()
+        with self._lock:
+            self._items.clear()
+            self._ids_in_order.clear()
+            self._matrix = None
+            if self.persistence_path:
+                self._save()
 
     def _recompute_all_vectors(self) -> None:
         """
-        重新计算所有条目的向量并重建矩阵
+        重新计算所有条目的向量并重建矩阵（调用方需持锁）
 
-        增量型 embedder（TF-IDF）的词表随语料变化，每次 add/delete 后
-        必须重算全部向量，保证向量空间一致。对固定词表 embedder（GLM）同样适用。
+        - 增量型 embedder（TF-IDF）：先 fit_corpus 同步完整语料（吸收新增、
+          移除已删），再逐条 transform——每次 add/delete 只有一次重拟合。
+        - 固定词表 embedder（如 GLMEmbedder）：沿用条目缓存的向量，
+          只补算缺失的，避免每次 add 全量重调 embedding API。
         """
         if not self._items:
             self._matrix = None
             return
-        # 对增量型 embedder，先让它"见到"全部当前语料再逐条向量化
         all_texts = [self._items[i]["text"] for i in self._ids_in_order]
         embedder = self.embedder
+        vectors: list[list[float]]
         if isinstance(embedder, LocalTfidfEmbedder):
-            embedder._ensure_fitted(all_texts)
-        vectors = [embedder.embed(self._items[i]["text"]) for i in self._ids_in_order]
-        # 缓存向量到条目（供持久化之外的快速访问）
-        for iid, vec in zip(self._ids_in_order, vectors, strict=False):
-            self._items[iid]["vector"] = vec
+            embedder.fit_corpus(all_texts)
+            vectors = [embedder.embed(text) for text in all_texts]
+            for iid, vec in zip(self._ids_in_order, vectors, strict=True):
+                self._items[iid]["vector"] = vec
+        else:
+            vectors = []
+            for iid in self._ids_in_order:
+                item = self._items[iid]
+                vec = item.get("vector")
+                if vec is None:
+                    vec = embedder.embed(item["text"])
+                    item["vector"] = vec
+                vectors.append(vec)
+        # 全部算完再整体替换矩阵，避免读到半更新状态
         self._matrix = np.array(vectors)
 
     def _save(self) -> None:
-        """持久化文本与元数据（向量不存，加载时按 embedder 重新生成）"""
+        """持久化文本与元数据（原子写入；向量不存，加载时按 embedder 重新生成）"""
         try:
             data = [
                 {"id": iid, "text": it["text"], "metadata": it["metadata"]}
                 for iid, it in self._items.items()
             ]
-            with open(self.persistence_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            payload = json.dumps(data, ensure_ascii=False, indent=2)
+            dir_name = os.path.dirname(os.path.abspath(self.persistence_path))
+            os.makedirs(dir_name, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(prefix=".vectormem_", suffix=".tmp", dir=dir_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, self.persistence_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
         except Exception as e:
             logger.warning("向量记忆持久化失败: %s", e)
 
     def _load(self) -> None:
-        """从持久化文件加载（重新计算向量）"""
+        """从持久化文件加载（重新计算向量；单条损坏只跳过该条，不影响整体）"""
         if not (self.persistence_path and os.path.exists(self.persistence_path)):
             return
         try:
             with open(self.persistence_path, encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(
+                    f"向量记忆文件格式非法（应为 JSON 数组，实际 {type(data).__name__}）"
+                )
+            skipped = 0
             for entry in data:
+                if not isinstance(entry, dict):
+                    skipped += 1
+                    continue
+                text = entry.get("text")
+                if not isinstance(text, str) or not text:
+                    skipped += 1
+                    continue
                 item_id = entry.get("id") or str(uuid.uuid4())
+                if item_id in self._items:  # 跳过重复 id，保持索引一致
+                    skipped += 1
+                    continue
                 self._items[item_id] = {
-                    "text": entry["text"],
-                    "metadata": entry.get("metadata", {}),
+                    "text": text,
+                    "metadata": entry.get("metadata")
+                    if isinstance(entry.get("metadata"), dict)
+                    else {},
                 }
                 self._ids_in_order.append(item_id)
-            # 统一重算所有向量（增量型 embedder 需在完整语料上拟合）
+            if skipped:
+                logger.warning("向量记忆加载时跳过 %d 条无效/重复条目", skipped)
+            # 无论是否有坏条目，统一重算所有向量（增量型 embedder 需在完整语料上拟合）
             self._recompute_all_vectors()
             logger.info("向量记忆已加载 %d 条", len(self._items))
         except Exception as e:
