@@ -110,7 +110,9 @@ team = loader.build_team(config, agents)  # 有 team 块时返回 Team，否则 
 ```
 
 `build` 内部：
-1. 创建 `GLMClient(model=config.model)`
+1. 按 `llm.provider` 创建客户端：默认 `GLMClient(model=config.model)`；
+   `provider: openai` + `base_url` 时创建 `OpenAICompatClient`（任何 OpenAI 兼容端点，
+   Key 从 `OPENAI_API_KEY` 读取——LLM 抽象层双实现的配置入口）
 2. 为每个 AgentSpec 构造一个通用 Agent（`_ConfigurableAgent`），挂载声明的工具
 3. 构建 ConversationSession
 

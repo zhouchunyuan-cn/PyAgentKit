@@ -25,6 +25,7 @@ from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
 from .memory import Memory
 from .memory_manager import MemoryManager
 from .message import Message
+from .openai_client import OpenAICompatClient
 from .react_engine import AgentStreamEvent, ReactEngine
 from .router import Router
 from .session import ConversationSession, SessionManager
@@ -65,6 +66,7 @@ __all__ = [
     "RemoteMCPTool",
     "LLMClient",
     "GLMClient",
+    "OpenAICompatClient",
     "ChatResult",
     "ToolCall",
     "TokenUsage",

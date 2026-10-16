@@ -67,6 +67,8 @@ class AppConfig:
     """整份配置解析后的规格"""
 
     model: str = "glm-4-flash"
+    llm_provider: str = "glm"  # "glm"（智谱原生）或 "openai"（OpenAI 兼容端点）
+    llm_base_url: str | None = None  # provider=openai 时的 API 根地址
     agents: list[AgentSpec] = field(default_factory=list)
     session_agent: str | None = None
     session_system_context: str | None = None
@@ -118,6 +120,14 @@ class ConfigLoader:
         """
         llm_section = raw.get("llm", {}) or {}
         model = llm_section.get("model", "glm-4-flash")
+        provider = str(llm_section.get("provider", "glm")).lower()
+        if provider not in ("glm", "openai"):
+            raise ConfigError(
+                f"llm.provider '{provider}' 非法，可选: glm（智谱原生）/ openai（OpenAI 兼容端点）"
+            )
+        base_url = llm_section.get("base_url")
+        if provider == "openai" and not base_url:
+            raise ConfigError("llm.provider 为 openai 时必须配置 llm.base_url（API 根地址）")
 
         agents_raw = raw.get("agents", []) or []
         if not agents_raw:
@@ -150,6 +160,8 @@ class ConfigLoader:
 
         return AppConfig(
             model=model,
+            llm_provider=provider,
+            llm_base_url=base_url,
             agents=agent_specs,
             session_agent=session_agent or agent_specs[0].id,
             session_system_context=session_section.get("system_context"),
@@ -238,7 +250,16 @@ class ConfigLoader:
             - agents_dict: {agent_id: Agent}
             - session: 绑定到 session_agent 的 ConversationSession
         """
-        llm = llm_client or GLMClient(model=config.model)
+        if llm_client is None:
+            if config.llm_provider == "openai":
+                # OpenAI 兼容端点（DeepSeek/vLLM/Ollama 等）：Key 从 OPENAI_API_KEY 读取
+                from .openai_client import OpenAICompatClient
+
+                llm = OpenAICompatClient(base_url=config.llm_base_url, model=config.model)
+            else:
+                llm = GLMClient(model=config.model)
+        else:
+            llm = llm_client
 
         agents: dict[str, Agent] = {}
         for spec in config.agents:

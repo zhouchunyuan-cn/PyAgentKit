@@ -1,6 +1,17 @@
 # PyAgentKit
 
+[![CI](https://github.com/zhouchunyuan-cn/PyAgentKit/actions/workflows/ci.yml/badge.svg)](https://github.com/zhouchunyuan-cn/PyAgentKit/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-397%20passed-brightgreen)](tests/)
+[![Version](https://img.shields.io/badge/version-0.4.0-orange)](CHANGELOG.md)
+
 > 轻量级、可扩展的多智能体框架 —— 基于智谱 GLM，开箱即用的 ReAct Agent、团队协作与异步路由。
+
+> **定位说明**：这是一个**教学参考实现**（约 7000 行核心代码 + 8 章教程）——为了可通读性而刻意保持小巧，
+> 覆盖现代 Agent 框架的完整概念（ReAct / 工具 / 记忆 / 编排 / MCP / 检查点 / 可观测），
+> 但**不是生产框架**：单机单进程、文件存储、无限流与鉴权。想理解原理、借鉴架构 → 非常合适；
+> 想直接部署业务 → 请用工业级框架。
 
 PyAgentKit 让你用最少的代码构建能**思考、调用工具、记忆上下文、彼此协作、团队编排**的 AI Agent。支持命令行交互、YAML 声明式编排、流式输出、Token 统计与执行追踪，以及完整的多智能体编程接口。
 
@@ -14,6 +25,25 @@ pyagentkit chat --tools web_search calculator
 pyagentkit run configs/team_example.yaml
 ```
 
+## 效果预览
+
+`pyagentkit chat --tools web_search calculator` 的交互形态（示意转录，思考过程暗色、工具调用单行提示、答复逐字流出）：
+
+```text
+你> 用 2026 年的数据估算：如果量子计算算力每年翻倍，3 年后相对现在的倍数是多少？
+· 调用工具 web_search({'query': 'quantum computing power growth 2026'})
+· 调用工具 calculator({'expression': '2**3'})
+助手: 根据搜索到的行业报告，量子计算的有效算力近年保持约每年翻倍的增速。
+按翻倍规律 3 年后算力是现在的 2**3 = 8 倍……
+
+task> 写一份AI行业分析报告            # 团队模式：断点续跑（崩溃/暂停后同 run_id 续跑）
+[团队执行中...]
+  ├─ Leader 规划：3 个子任务（search → analysis → write）
+  ├─ researcher 执行… ✓ 已落盘（report-101 检查点）
+  └─ 进程中断/暂停 → 再次执行 team.run("写一份AI行业分析报告", run_id="report-101")
+     → 从 writer 断点继续，已跑步骤不重复计费
+```
+
 ## 核心能力
 
 | 能力 | 说明 |
@@ -25,7 +55,7 @@ pyagentkit run configs/team_example.yaml
 | 📊 **Token 统计** | 每次 think 累计 prompt/completion/total token，成本可控 |
 | 🔍 **执行追踪（Trace）** | 记录每步耗时与 token，复杂协作不再黑盒 |
 | 💾 **统一记忆** | MemoryManager 外观聚合 KV / 向量 / 会话三类记忆，一个接口 |
-| 🔌 **LLM 抽象层** | 内置 GLM 实现，可扩展其他模型；重试、Key 校验内置 |
+| 🔌 **LLM 抽象层** | GLM 原生 + OpenAI 兼容双实现（DeepSeek/vLLM/Ollama 即插即用）；重试、Key 校验内置 |
 | 🛠️ **插件化工具** | calculator / web_search / file_read / database，支持 function-calling |
 | 🔍 **向量记忆** | 语义召回相关经验（本地 TF-IDF 零成本，可切 GLM embedding） |
 | 💬 **多轮对话** | Session 维护上下文，支持追问与指代消解 |
@@ -36,7 +66,7 @@ pyagentkit run configs/team_example.yaml
 | 🔗 **异步接口** | `think_async` / `achat` / `achat_stream`，asyncio 程序与多 Agent 并发场景即插即用 |
 | 📋 **YAML 配置** | 声明式编排 Agent / 工具 / 会话 / 团队，零代码定制 |
 | 🖥️ **命令行工具** | `pyagentkit` 命令：交互对话 / 单次提问 / 跑配置 / 列工具 |
-| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、382 个单元测试守护 |
+| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、397 个单元测试守护 |
 
 ## 架构总览
 
@@ -288,6 +318,27 @@ async def main():
 asyncio.run(main())
 ```
 
+## 更换模型后端（OpenAI 兼容端点）
+
+`LLMClient` 抽象层有两个实现——GLM 原生客户端，以及任何 OpenAI Chat Completions 兼容端点
+（OpenAI、DeepSeek、Moonshot、vLLM、Ollama 兼容模式，零新增依赖）。上层代码一行不改：
+
+```python
+from core import OpenAICompatClient
+
+llm = OpenAICompatClient(base_url="https://api.deepseek.com/v1", model="deepseek-chat")
+agent = MyAgent(llm_client=llm)   # 流式/工具调用/思考透传全部照常工作
+```
+
+YAML 一行切换（Key 从环境变量 `OPENAI_API_KEY` 读取）：
+
+```yaml
+llm:
+  provider: openai
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-chat
+```
+
 ## 真 MCP 客户端（官方协议）
 
 接入任何标准 MCP 服务器（需可选依赖：`pip install -e ".[mcp]"`），工具自动发现并注册为本地 Tool：
@@ -380,13 +431,13 @@ Hierarchical 模式续跑会直接复用断点中的任务规划（省一次 Lea
 - **SDK**: zhipuai、python-dotenv、pyyaml
 - **向量记忆**: scikit-learn (TF-IDF) + numpy（本地零成本，可切 GLM embedding）
 - **异步**: asyncio（AsyncRouter）
-- **测试**: pytest（382 个用例）
+- **测试**: pytest（397 个用例）
 - **Python**: ≥ 3.10
 
 ## 测试
 
 ```bash
-pytest tests/                   # 运行全部 382 个测试
+pytest tests/                   # 运行全部 397 个测试
 pytest tests/test_team.py -v    # 运行单个模块
 ```
 
@@ -427,7 +478,7 @@ python mcp_demo.py              # MCP 工具集成
 4. **可观测** — Trace 让每步耗时与 token 清晰可见，复杂协作不黑盒
 5. **安全** — AST 解析替代 eval、文件路径越界检测、敏感文件默认拒读、
    数据库只读白名单、消息跳数防环、异常边界
-6. **可测试** — 核心逻辑有 382 个单元测试守护，依赖可 mock
+6. **可测试** — 核心逻辑有 397 个单元测试守护，依赖可 mock
 
 ## 应用场景
 
