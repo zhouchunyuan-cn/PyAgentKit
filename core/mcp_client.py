@@ -28,11 +28,13 @@
 """
 
 import asyncio
+import ipaddress
 import logging
 import threading
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from .tools import Tool
 
@@ -40,7 +42,48 @@ logger = logging.getLogger(__name__)
 
 
 class MCPClientError(RuntimeError):
-    """MCP 客户端错误（依赖缺失、连接失败等）"""
+    """MCP 客户端错误（依赖缺失、连接失败、端点非法等）"""
+
+
+def validate_mcp_url(url: str, allow_private: bool = False) -> str:
+    """
+    校验 MCP HTTP 端点，阻断 SSRF 常见目标（教学级实现）
+
+    规则：
+    - 仅支持 http/https
+    - 回环地址（localhost/127.0.0.0/8/::1）允许 http——本地教学服务器是主流用法
+    - 非回环端点必须 https
+    - 链路本地（169.254.0.0/16，云元数据服务）、未指定/保留地址永远拒绝
+    - 私网地址（10/8、172.16/12、192.168/16、IPv6 ULA）默认拒绝，allow_private=True 显式放行
+
+    已知局限（企业级需进一步做）：按主机名/字面量 IP 判断，不解析 DNS——
+    域名解析到内网 IP 的 DNS rebinding 不在此防线内。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise MCPClientError(f"MCP 端点仅支持 http/https: {url!r}")
+    host = parsed.hostname or ""
+    if not host:
+        raise MCPClientError(f"MCP 端点缺少主机名: {url!r}")
+
+    try:
+        host_ip = ipaddress.ip_address(host)
+    except ValueError:
+        host_ip = None  # 域名形式
+
+    is_loopback = host.lower() == "localhost" or (host_ip is not None and host_ip.is_loopback)
+    if host_ip is not None and (
+        host_ip.is_link_local or host_ip.is_unspecified or host_ip.is_reserved
+    ):
+        raise MCPClientError(f"MCP 端点指向受限地址（{host}，含云元数据/链路本地段），已拒绝")
+    if not is_loopback:
+        if parsed.scheme != "https":
+            raise MCPClientError("非本机 MCP 端点必须使用 https（明文 http 仅允许 localhost）")
+        if host_ip is not None and host_ip.is_private and not allow_private:
+            raise MCPClientError(
+                f"MCP 端点指向私网地址 {host}；确需访问内网服务器请传 allow_private=True"
+            )
+    return url
 
 
 @dataclass
@@ -49,11 +92,13 @@ class MCPServerConfig:
     MCP 服务器连接配置（url 与 command 二选一）
 
     Attributes:
-        url: Streamable HTTP 端点（如 "http://localhost:8000/mcp"）
+        url: Streamable HTTP 端点（如 "http://localhost:8000/mcp"）。
+             受 SSRF 防护校验：非本机必须 https；云元数据/链路本地段永远拒绝
         command: stdio 方式的服务器启动命令
         args: command 的参数列表
         env: stdio 子进程环境变量
         name: 服务器显示名（用于日志与线程命名）
+        allow_private: 允许 https 访问私网地址（自建内网服务器场景，默认拒绝）
     """
 
     url: str | None = None
@@ -61,12 +106,17 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] | None = None
     name: str = "mcp"
+    allow_private: bool = False
 
     def __post_init__(self):
         if bool(self.url) == bool(self.command):
             raise ValueError("MCPServerConfig 需要且只需要 url 或 command 之一")
-        if self.command and not self.url:
-            self.name = self.name if self.name != "mcp" else self.command
+        if self.url:
+            validate_mcp_url(self.url, allow_private=self.allow_private)
+            if self.name == "mcp":
+                self.name = urlparse(self.url).hostname or "mcp"
+        elif self.command and self.name == "mcp":
+            self.name = self.command
 
 
 class RemoteMCPTool(Tool):

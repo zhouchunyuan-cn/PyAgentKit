@@ -3,8 +3,8 @@
 [![CI](https://github.com/zhouchunyuan-cn/PyAgentKit/actions/workflows/ci.yml/badge.svg)](https://github.com/zhouchunyuan-cn/PyAgentKit/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-397%20passed-brightgreen)](tests/)
-[![Version](https://img.shields.io/badge/version-0.4.0-orange)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-426%20passed-brightgreen)](tests/)
+[![Version](https://img.shields.io/badge/version-0.5.0-orange)](CHANGELOG.md)
 
 > 轻量级、可扩展的多智能体框架 —— 基于智谱 GLM，开箱即用的 ReAct Agent、团队协作与异步路由。
 
@@ -63,10 +63,11 @@ task> 写一份AI行业分析报告            # 团队模式：断点续跑（�
 | ⚡ **并行执行** | 一步内多个工具调用并发执行；Hierarchical 子任务可按成员分组 fan-out（`parallel: true`） |
 | 🌐 **真 MCP 客户端** | 官方协议（initialize/tools/list/call_tool），Streamable HTTP 与 stdio 双传输，工具自动注册 |
 | 💾 **断点续跑（Checkpoint）** | 每步原子落盘；崩溃/暂停后同 run_id 从断点继续，已跑步骤不重复付费；完成态幂等 |
+| 🏢 **企业级关切（教学版）** | 审计日志（含脱敏）、token 预算熔断、工具调用审批（HITL）、SSRF 白名单、检查点跨进程锁、eval 回归基准 |
 | 🔗 **异步接口** | `think_async` / `achat` / `achat_stream`，asyncio 程序与多 Agent 并发场景即插即用 |
 | 📋 **YAML 配置** | 声明式编排 Agent / 工具 / 会话 / 团队，零代码定制 |
 | 🖥️ **命令行工具** | `pyagentkit` 命令：交互对话 / 单次提问 / 跑配置 / 列工具 |
-| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、397 个单元测试守护 |
+| 🔒 **工程化** | 统一日志、异常边界、消息跳数防环、426 个单元测试守护 |
 
 ## 架构总览
 
@@ -318,6 +319,42 @@ async def main():
 asyncio.run(main())
 ```
 
+## 企业级关切（教学版实现）
+
+生产框架的安全与治理关切，以最小可读的实现呈现：
+
+```python
+# 1) 审计日志：谁让 Agent 干了什么（敏感参数自动脱敏），JSONL 落盘
+from core import AuditLogger
+audit = AuditLogger("audit.jsonl", actor="user-123")
+audit.install(agent)
+
+# 2) token 预算：超限后不再发起工具循环步，优雅收尾
+agent = MyAgent(llm_client=llm, token_budget=100_000)
+agent.budget_exceeded   # 最近一次是否因预算提前收尾
+
+# 3) 工具调用审批（human-in-the-loop）：拒绝会作为错误回传模型自纠
+agent.tool_registry.set_approver(
+    lambda name, args: input(f"允许 {name}({args})? [y/N] ").lower() == "y",
+    tools=["database", "file_read"],
+)
+
+# 4) MCP 端点 SSRF 防护：非本机必须 https；云元数据/链路本地段永远拒绝
+MCPServerConfig(url="https://mcp.example.com/mcp")            # ✓
+MCPServerConfig(url="http://169.254.169.254/latest")          # ✗ 拒绝
+
+# 5) 检查点跨进程锁：两个进程同续跑同一 run_id，后者等待/报忙而非竞写
+
+# 6) trace 导出与串联：trace_id 随消息路由传播，完成时导出（可桥接 OTel）
+from core import JsonlTraceExporter, Tracer
+Tracer.set_exporter(JsonlTraceExporter("traces.jsonl"))
+
+# 7) eval 回归基准：改 prompt/换模型前后跑同一组用例对比通过率
+from core import EvalCase, run_eval, make_llm_judge
+report = run_eval(agent, [EvalCase(input="计算 15*3", expect_keywords=["45"])])
+print(report.format_text())
+```
+
 ## 更换模型后端（OpenAI 兼容端点）
 
 `LLMClient` 抽象层有两个实现——GLM 原生客户端，以及任何 OpenAI Chat Completions 兼容端点
@@ -431,13 +468,13 @@ Hierarchical 模式续跑会直接复用断点中的任务规划（省一次 Lea
 - **SDK**: zhipuai、python-dotenv、pyyaml
 - **向量记忆**: scikit-learn (TF-IDF) + numpy（本地零成本，可切 GLM embedding）
 - **异步**: asyncio（AsyncRouter）
-- **测试**: pytest（397 个用例）
+- **测试**: pytest（426 个用例）
 - **Python**: ≥ 3.10
 
 ## 测试
 
 ```bash
-pytest tests/                   # 运行全部 397 个测试
+pytest tests/                   # 运行全部 426 个测试
 pytest tests/test_team.py -v    # 运行单个模块
 ```
 
@@ -478,7 +515,7 @@ python mcp_demo.py              # MCP 工具集成
 4. **可观测** — Trace 让每步耗时与 token 清晰可见，复杂协作不黑盒
 5. **安全** — AST 解析替代 eval、文件路径越界检测、敏感文件默认拒读、
    数据库只读白名单、消息跳数防环、异常边界
-6. **可测试** — 核心逻辑有 397 个单元测试守护，依赖可 mock
+6. **可测试** — 核心逻辑有 426 个单元测试守护，依赖可 mock
 
 ## 应用场景
 

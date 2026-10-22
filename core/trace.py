@@ -84,6 +84,8 @@ class Trace:
 
     name: str = ""
     spans: list[TraceSpan] = field(default_factory=list)
+    # 全链路追踪标识：跨组件传播（消息 metadata/审计日志/日志关联都用它）
+    trace_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     started_at: float = field(default_factory=time.time)
     ended_at: float | None = None
 
@@ -107,7 +109,7 @@ class Trace:
 
     def format_text(self) -> str:
         """格式化为可读文本（类似分段时间线）"""
-        lines = [f"=== Trace: {self.name} ==="]
+        lines = [f"=== Trace: {self.name} (id={self.trace_id[:12]}) ==="]
         if self.duration is not None:
             lines.append(f"总耗时: {self.duration:.2f}s")
         tok = self.total_tokens()
@@ -128,6 +130,7 @@ class Trace:
         """序列化为字典（便于 JSON 导出）"""
         return {
             "name": self.name,
+            "trace_id": self.trace_id,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "duration": self.duration,
@@ -171,6 +174,9 @@ class Tracer:
     _enabled = False
     # 单个 trace 的 span 数上限（防长驻任务无限累积）
     MAX_SPANS = 10_000
+    # trace 完成时的导出器：Tracer.set_exporter(fn)；fn(trace) 异常不影响主流程。
+    # 内置 JsonlTraceExporter 落盘 JSONL；接 OpenTelemetry 时在导出器里转 span 即可
+    _exporter = None
     _state_var: contextvars.ContextVar[_TraceState | None] = contextvars.ContextVar(
         "pyagentkit_trace_state", default=None
     )
@@ -212,6 +218,11 @@ class Tracer:
         if state is not None:
             state.trace.ended_at = time.time()
             cls._state_var.set(None)
+            if cls._exporter is not None:
+                try:
+                    cls._exporter(state.trace)
+                except Exception as e:
+                    logger.warning("trace 导出器执行失败: %s", e)
             return state.trace
         return None
 
@@ -219,6 +230,23 @@ class Tracer:
     def current_trace(cls) -> Trace | None:
         state = cls._state_var.get()
         return state.trace if state is not None else None
+
+    @classmethod
+    def current_trace_id(cls) -> str | None:
+        """当前上下文的 trace_id（用于日志关联与跨组件传播；无活跃 trace 为 None）"""
+        trace = cls.current_trace()
+        return trace.trace_id if trace is not None else None
+
+    @classmethod
+    def set_exporter(cls, exporter) -> None:
+        """
+        设置 trace 导出器：fn(trace) 在每次 end_trace 时回调
+
+        接 OpenTelemetry / 任意后端的桥接点：
+            Tracer.set_exporter(JsonlTraceExporter("traces.jsonl"))     # 内置落盘
+            Tracer.set_exporter(lambda t: my_otel_bridge(t))            # 自定义桥接
+        """
+        cls._exporter = exporter
 
     @classmethod
     def start_span(cls, name: str, **attributes) -> TraceSpan | None:
@@ -283,3 +311,21 @@ class Tracer:
             attributes=dict(attributes),
         )
         state.trace.add_span(span)
+
+
+class JsonlTraceExporter:
+    """
+    内置 trace 导出器：每条完成的 trace 追加一行 JSON（to_dict 格式，含 trace_id）
+
+    用法：Tracer.set_exporter(JsonlTraceExporter("traces.jsonl"))
+    要接 OpenTelemetry 时，写一个把 Trace.spans 映射为 OTel span 的导出器即可。
+    """
+
+    def __init__(self, path: str = "traces.jsonl"):
+        self.path = path
+
+    def __call__(self, trace: Trace) -> None:
+        import json as _json
+
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(trace.to_dict(), ensure_ascii=False, default=str) + "\n")

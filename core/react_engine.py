@@ -87,6 +87,8 @@ class ReactEngine:
         # 交互序号：KV 快照 key 用递增序号而非"当前条数"，
         # 避免短期记忆过期收缩后 key 碰撞互相覆盖
         self._interaction_seq = 0
+        # 最近一次 think 是否因 token 预算耗尽而提前收尾（供成本监控消费）
+        self.last_run_budget_exceeded = False
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -157,6 +159,8 @@ class ReactEngine:
         # 本次 think 的 token 差值基线（trace 里记录本次用量而非历史累计值）
         _tokens_at_start = self._token_usage.total_tokens
 
+        self.last_run_budget_exceeded = False
+
         # 只要有任一回调，就走真流式主路径
         streaming = stream_callback is not None or events_callback is not None
 
@@ -169,8 +173,17 @@ class ReactEngine:
                 # 事件回调异常不干扰推理主流程
                 logger.warning("[%s] events_callback 异常: %s", agent.name, e)
 
-        # 2. ReAct 循环
+        # 2. ReAct 循环（token 预算耗尽则提前收尾，不再发起新的工具循环步）
         for step in range(agent.max_steps):
+            if self._budget_exceeded():
+                logger.warning(
+                    "[%s] 累计 token %d 已达预算上限 %d，提前收尾",
+                    agent.name,
+                    self._token_usage.total_tokens,
+                    agent.token_budget,
+                )
+                self.last_run_budget_exceeded = True
+                break
             try:
                 if streaming:
                     result = self._chat_streaming(
@@ -273,8 +286,9 @@ class ReactEngine:
                     }
                 )
 
-        # 超过最大步数仍未结束，做一次不带工具的收尾调用以获取最终答复
-        logger.warning("[%s] 达到最大步数 %d，进行收尾调用", agent.name, agent.max_steps)
+        # 循环耗尽（最大步数或 token 预算）：做一次不带工具的收尾调用以获取最终答复
+        reason = "预算耗尽" if self.last_run_budget_exceeded else f"达到最大步数 {agent.max_steps}"
+        logger.warning("[%s] %s，进行收尾调用", agent.name, reason)
         if streaming:
             final_result = self._chat_streaming(
                 messages, None, agent.max_steps, stream_callback, emit_event
@@ -288,11 +302,13 @@ class ReactEngine:
         self._remember_interaction(
             user_input, final_text, caller_manages_history=context_messages is not None
         )
-        Tracer.end_span(
-            _span,
-            steps=agent.max_steps,
-            total_tokens=self._token_usage.total_tokens - _tokens_at_start,
-        )
+        span_attrs: dict[str, Any] = {
+            "steps": agent.max_steps,
+            "total_tokens": self._token_usage.total_tokens - _tokens_at_start,
+        }
+        if self.last_run_budget_exceeded:
+            span_attrs["budget_exceeded"] = True
+        Tracer.end_span(_span, **span_attrs)
         # on_think_end 钩子
         self._fire_hook("on_think_end", agent, final_text)
         return final_text
@@ -384,6 +400,11 @@ class ReactEngine:
     # ------------------------------------------------------------------
     # 内部方法
     # ------------------------------------------------------------------
+    def _budget_exceeded(self) -> bool:
+        """token 预算检查（未设置预算视为不限制；按实例生命周期累计用量）"""
+        budget = getattr(self.agent, "token_budget", None)
+        return budget is not None and self._token_usage.total_tokens >= budget
+
     def _execute_tool_calls(
         self,
         tool_calls: list[ToolCall],

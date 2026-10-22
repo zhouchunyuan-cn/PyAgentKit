@@ -12,15 +12,23 @@ except PackageNotFoundError:  # 未安装为包（如直接从源码运行）
 
 from .agent import Agent
 from .async_router import AsyncRouter
-from .checkpoint import FileCheckpointStore, RunOutcome
+from .audit import AuditLogger, redact
+from .checkpoint import CheckpointBusyError, FileCheckpointStore, RunOutcome
 from .collaboration import (
     CapabilityCollaborationStrategy,
     CollaborationStrategy,
     DynamicCollaborationManager,
 )
+from .evals import EvalCase, EvalReport, make_llm_judge, run_eval
 from .hooks import AgentHooks
 from .llm import ChatResult, GLMClient, LLMClient, StreamChunk, TokenUsage, ToolCall
-from .mcp_client import MCPClientError, MCPServerConfig, MCPToolProvider, RemoteMCPTool
+from .mcp_client import (
+    MCPClientError,
+    MCPServerConfig,
+    MCPToolProvider,
+    RemoteMCPTool,
+    validate_mcp_url,
+)
 from .mcp_tools import MCPIntegrationTool, MCPTool, MCPToolRegistry
 from .memory import Memory
 from .memory_manager import MemoryManager
@@ -38,11 +46,19 @@ from .team import (
     Team,
 )
 from .tools import CalculatorTool, DatabaseTool, FileReadTool, Tool, ToolRegistry, WebSearchTool
-from .trace import Trace, Tracer, TraceSpan
+from .trace import JsonlTraceExporter, Trace, Tracer, TraceSpan
 from .vector_memory import Embedder, GLMEmbedder, LocalTfidfEmbedder, VectorMemory
 
 __all__ = [
     "Agent",
+    "AuditLogger",
+    "redact",
+    "CheckpointBusyError",
+    "EvalCase",
+    "EvalReport",
+    "run_eval",
+    "make_llm_judge",
+    "JsonlTraceExporter",
     "AgentHooks",
     "AgentStreamEvent",
     "FileCheckpointStore",
@@ -64,6 +80,7 @@ __all__ = [
     "MCPServerConfig",
     "MCPToolProvider",
     "RemoteMCPTool",
+    "validate_mcp_url",
     "LLMClient",
     "GLMClient",
     "OpenAICompatClient",

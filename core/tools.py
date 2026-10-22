@@ -16,6 +16,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from .mcp_tools import ConcreteMCPIntegrationTool, MCPToolRegistry
@@ -732,6 +733,31 @@ class ToolRegistry:
         self.mcp_integration_tool: ConcreteMCPIntegrationTool | None = None
         # 已连接的真 MCP 服务器 provider（会话生命周期挂在其上）
         self.mcp_providers: list[Any] = []
+        # HITL 审批：执行前询问审批人（人机协作/高危工具把关），None 未启用
+        self._approver: Callable[[str, dict[str, Any]], bool] | None = None
+        self._approval_tools: set[str] | None = None  # None=全部工具都审批
+
+    def set_approver(
+        self,
+        approver: Callable[[str, dict[str, Any]], bool],
+        tools: list[str] | None = None,
+    ) -> None:
+        """
+        设置工具调用审批人（human-in-the-loop）
+
+        Args:
+            approver: 审批函数 (tool_name, arguments) -> bool；False 表示拒绝执行。
+                      审批拒绝会作为工具错误回传给模型，模型可调整方案
+            tools: 需要审批的工具名列表；None 表示审批全部工具（高危场景）
+
+        用法（CLI 交互审批的雏形）：
+            registry.set_approver(
+                lambda name, args: input(f"允许执行 {name}({args})? [y/N] ").lower() == "y",
+                tools=["database", "file_read"],
+            )
+        """
+        self._approver = approver
+        self._approval_tools = set(tools) if tools is not None else None
 
     def register(self, tool: Tool) -> None:
         """
@@ -771,6 +797,12 @@ class ToolRegistry:
         tool = self.get(tool_name)
         if tool is None:
             raise ValueError(f"Tool '{tool_name}' not found")
+        # HITL 审批：高危工具执行前放行检查（拒绝 → 报错回传模型自纠）
+        approval_needed = self._approver is not None and (
+            self._approval_tools is None or tool_name in self._approval_tools
+        )
+        if approval_needed and not self._approver(tool_name, dict(kwargs)):
+            raise PermissionError(f"工具 '{tool_name}' 的调用被审批拒绝（arguments={kwargs}）")
         checked = self._validate_arguments(tool, kwargs)
         return tool.run(**checked)
 

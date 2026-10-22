@@ -21,6 +21,7 @@ from typing import Any
 
 from .agent import Agent
 from .message import Message, reset_message_hops, set_message_hops
+from .trace import Tracer
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,10 @@ class Router:
             self.stats["routing_errors"] += 1
             return False
 
+        # 跨组件传播：把当前 trace_id 盖进消息 metadata（消息日志/审计可据此串联）
+        trace_id = Tracer.current_trace_id()
+        if trace_id:
+            message.metadata.setdefault("trace_id", trace_id)
         # 让本消息处理期间 Agent.send 创建的新消息继承 hops+1 与链路预算
         token = set_message_hops(message.hops + 1, message.max_hops)
         try:

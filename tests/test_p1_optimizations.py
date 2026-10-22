@@ -535,7 +535,7 @@ class TestMCPClient:
 
     def test_discover_converts_tools_with_schema(self, monkeypatch):
         _patch_open(monkeypatch, FakeMCPSession())
-        provider = MCPToolProvider(MCPServerConfig(url="http://fake/mcp"))
+        provider = MCPToolProvider(MCPServerConfig(url="http://localhost:8000/mcp"))
         try:
             tools = provider.discover()
             assert [t.name for t in tools] == ["add", "echo"]
@@ -548,7 +548,7 @@ class TestMCPClient:
 
     def test_call_tool_sync(self, monkeypatch):
         session = _patch_open(monkeypatch, FakeMCPSession())
-        provider = MCPToolProvider(MCPServerConfig(url="http://fake/mcp"))
+        provider = MCPToolProvider(MCPServerConfig(url="http://localhost:8000/mcp"))
         try:
             result = provider.call_tool_sync("add", {"a": 2, "b": 3})
             assert result == {"content": "5"}
@@ -558,7 +558,7 @@ class TestMCPClient:
 
     def test_call_tool_error_surfaced(self, monkeypatch):
         _patch_open(monkeypatch, FakeMCPSession(fail_calls=True))
-        provider = MCPToolProvider(MCPServerConfig(url="http://fake/mcp"))
+        provider = MCPToolProvider(MCPServerConfig(url="http://localhost:8000/mcp"))
         try:
             result = provider.call_tool_sync("add", {"a": 1, "b": 1})
             assert "error" in result
@@ -569,7 +569,7 @@ class TestMCPClient:
         _patch_open(monkeypatch, FakeMCPSession())
 
         async def run():
-            provider = MCPToolProvider(MCPServerConfig(url="http://fake/mcp"))
+            provider = MCPToolProvider(MCPServerConfig(url="http://localhost:8000/mcp"))
             try:
                 tools = await provider.adiscover()
                 result = await provider.acall_tool("add", {"a": 20, "b": 22})
@@ -586,7 +586,7 @@ class TestMCPClient:
         session = _patch_open(monkeypatch, FakeMCPSession())
         registry = ToolRegistry()
         try:
-            names = registry.register_mcp_server(MCPServerConfig(url="http://fake/mcp"))
+            names = registry.register_mcp_server(MCPServerConfig(url="http://localhost:8000/mcp"))
             assert names == ["add", "echo"]
             # 参数校验同样作用于远端工具：字符串数字被矫正后执行
             result = registry.execute("add", a="2", b=3)
@@ -599,6 +599,6 @@ class TestMCPClient:
         import sys
 
         monkeypatch.setitem(sys.modules, "mcp", None)  # 模拟未安装
-        provider = MCPToolProvider(MCPServerConfig(url="http://fake/mcp"))
+        provider = MCPToolProvider(MCPServerConfig(url="http://localhost:8000/mcp"))
         with pytest.raises(MCPClientError, match="pip install"):
             provider.discover()

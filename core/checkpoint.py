@@ -31,12 +31,71 @@ import logging
 import os
 import re
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 # run_id 中允许直接出现在文件名里的字符；其余替换为短哈希，防路径注入
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class CheckpointBusyError(RuntimeError):
+    """同一 run_id 正被其他进程/线程执行（跨进程文件锁获取超时）"""
+
+
+class _RunFileLock:
+    """
+    跨进程咨询锁：以 O_CREAT|O_EXCL 原子创建锁文件实现
+
+    - 获取失败则按间隔重试，超时抛 CheckpointBusyError
+    - 持锁超过 stale_after 的陈旧锁（持锁方崩溃未释放）自动抢占
+    - 同进程内由 FileCheckpointStore 的线程锁先行串行化，文件锁主要防多进程
+    """
+
+    def __init__(self, path: str, timeout: float = 10.0, stale_after: float = 120.0):
+        self.path = path
+        self.timeout = timeout
+        self.stale_after = stale_after
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(self._fd, "w", encoding="utf-8") as f:
+                    f.write(f"{os.getpid()} {time.time()}")
+                return
+            except FileExistsError:
+                # 陈旧锁抢占：持锁方疑似崩溃（超过 stale_after 未释放）
+                try:
+                    if time.time() - os.path.getmtime(self.path) > self.stale_after:
+                        logger.warning("检测到陈旧锁 %s，抢占", self.path)
+                        os.unlink(self.path)
+                        continue
+                except OSError:
+                    pass  # 锁文件刚好被释放，直接重试
+                if time.monotonic() >= deadline:
+                    raise CheckpointBusyError(
+                        f"检查点锁 {self.path} 获取超时（{self.timeout}s）："
+                        "同一 run_id 可能正被其他进程执行"
+                    ) from None
+                time.sleep(0.1)
+
+    def release(self) -> None:
+        if self._fd is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(self.path)
+            self._fd = None
+
+    def __enter__(self) -> "_RunFileLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
 
 
 @dataclass
@@ -68,6 +127,28 @@ class FileCheckpointStore:
     def __init__(self, dir_path: str = ".checkpoints"):
         self.dir_path = dir_path
         os.makedirs(dir_path, exist_ok=True)
+        # 进程内操作串行化（跨进程由 run_lock 的文件锁防护）
+        self._op_lock = threading.RLock()
+
+    def run_lock(self, run_id: str, timeout: float = 10.0, stale_after: float = 120.0):
+        """
+        获取该 run_id 的执行锁（上下文管理器，跨进程文件锁）
+
+        Team 执行带 run_id 的任务时自动持有；两个进程同时续跑同一 run_id，
+        后者会等待或抛 CheckpointBusyError，而不是竞写检查点。
+        stale_after：持锁方疑似崩溃（锁龄超此值）后自动抢占。
+        """
+        return _RunFileLock(
+            os.path.join(self.dir_path, f"{self._safe_name(run_id)}.lock"),
+            timeout=timeout,
+            stale_after=stale_after,
+        )
+
+    def _safe_name(self, run_id: str) -> str:
+        if not _SAFE_RUN_ID.match(run_id or ""):
+            digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+            return f"run-{digest}"
+        return run_id
 
     def _path(self, run_id: str) -> str:
         if not _SAFE_RUN_ID.match(run_id or ""):
@@ -78,38 +159,41 @@ class FileCheckpointStore:
 
     def save(self, run_id: str, state: dict) -> None:
         """保存检查点（原子写）；state 必须可 JSON 序列化，否则抛出且不动旧文件"""
-        path = self._path(run_id)
-        payload = json.dumps(state, ensure_ascii=False, indent=2)
-        fd, tmp_path = tempfile.mkstemp(prefix=".ckpt_", suffix=".tmp", dir=self.dir_path)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-            os.replace(tmp_path, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
-        logger.debug("检查点已保存: %s", path)
+        with self._op_lock:
+            path = self._path(run_id)
+            payload = json.dumps(state, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(prefix=".ckpt_", suffix=".tmp", dir=self.dir_path)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
+            logger.debug("检查点已保存: %s", path)
 
     def load(self, run_id: str) -> dict | None:
         """读取检查点；不存在或损坏（无法解析/非字典）返回 None"""
-        path = self._path(run_id)
-        if not os.path.exists(path):
-            return None
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("检查点格式非法（应为 JSON 对象）")
-            return data
-        except Exception as e:
-            logger.warning("检查点 %s 无法读取，忽略: %s", path, e)
-            return None
+        with self._op_lock:
+            path = self._path(run_id)
+            if not os.path.exists(path):
+                return None
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("检查点格式非法（应为 JSON 对象）")
+                return data
+            except Exception as e:
+                logger.warning("检查点 %s 无法读取，忽略: %s", path, e)
+                return None
 
     def delete(self, run_id: str) -> bool:
         """删除检查点（重新开始任务时使用）"""
-        path = self._path(run_id)
-        if os.path.exists(path):
-            os.unlink(path)
-            return True
-        return False
+        with self._op_lock:
+            path = self._path(run_id)
+            if os.path.exists(path):
+                os.unlink(path)
+                return True
+            return False

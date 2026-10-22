@@ -741,8 +741,23 @@ class Team:
         return self._run_impl(task_description, stream_callback, run_id, step_limit)
 
     def _run_impl(self, task_description, stream_callback, run_id, step_limit):
-        from .checkpoint import RunOutcome  # 延迟导入避免环
 
+        # 跨进程执行锁：两个进程同时续跑同一 run_id 时，后者等待/报忙，
+        # 而不是竞写检查点（陈旧锁在持锁方崩溃后自动抢占）
+        store = self.checkpoint_store
+        lock = store.run_lock(run_id) if (run_id and store is not None) else None
+        if lock is not None:
+            lock.acquire()
+        try:
+            return self._run_locked(task_description, stream_callback, run_id, step_limit)
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _run_locked(self, task_description, stream_callback, run_id, step_limit):
+        from .checkpoint import RunOutcome
+
+        store = self.checkpoint_store
         if not self.members:
             raise RuntimeError(f"团队 '{self.name}' 没有成员")
 

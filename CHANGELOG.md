@@ -3,6 +3,31 @@
 本项目的显著变更记录。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循语义化版本。历史版本的精确日期以 [git 历史](https://github.com/zhouchunyuan-cn/PyAgentKit/commits/main) 为准。
 
+## [0.5.0] - 2026-10-22
+
+企业级关切的教学版实现——把上轮企业架构差距评审中"值得补"的七项全部落地。
+
+### 新增
+
+- **审计日志**（`core/audit.py`）：结构化 JSONL（谁/何时/哪个 Agent/做了什么，含工具参数与结果摘要），
+  敏感键自动脱敏；复用 AgentHooks 零侵入接入
+- **token 预算执行**：`Agent(token_budget=...)`，累计用量超限后不再发起新的工具循环步，
+  优雅收尾并标记 `budget_exceeded`（trace 属性同步记录）
+- **工具调用审批（HITL）**：`ToolRegistry.set_approver(fn, tools=[...])`，
+  拒绝作为错误回传模型自纠；可只审批高危工具
+- **MCP 端点 SSRF 防护**：非本机端点强制 https；云元数据/链路本地段永远拒绝；
+  私网地址默认拒绝（`allow_private=True` 显式放行）；已知局限（DNS rebinding）在文档注明
+- **检查点跨进程锁**：`FileCheckpointStore.run_lock()`（O_EXCL 文件锁 + 陈旧锁抢占），
+  Team 执行带 run_id 的任务自动持锁——两个进程同续跑不再竞写
+- **trace_id 传播与导出**：Trace 增加 trace_id；消息路由时自动盖进 metadata（跨组件串联）；
+  `Tracer.set_exporter()` 导出钩子 + 内置 `JsonlTraceExporter`（OTel 桥接点）
+- **eval 回归基准**（`core/evals.py`）：`EvalCase`（关键词断言 / 自定义 judge / `make_llm_judge`
+  LLM-as-judge），`run_eval` 产出通过率与 token 成本报告，支持 JSON 落盘做版本对比
+
+### 变更
+
+- 测试 397 → 426；版本 0.4.0 → 0.5.0
+
 ## [0.4.0] - 2026-10-16
 
 一次聚焦"接入 2026 年主流实践"的架构升级，同时完成一轮全面的代码评审修复。

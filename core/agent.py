@@ -52,6 +52,7 @@ class Agent(ABC):
         llm_client: LLMClient | None = None,
         model: str = "glm-4-flash",
         max_steps: int = DEFAULT_MAX_STEPS,
+        token_budget: int | None = None,
         capabilities: list[str] | None = None,
         tags: list[str] | None = None,
         hooks: AgentHooks | None = None,
@@ -66,6 +67,8 @@ class Agent(ABC):
             llm_client: LLM 客户端实例，传入后 think() 才能进行推理；不传则该 Agent 不走 LLM
             model: 模型名称（保留字段，实际模型由 llm_client 决定）
             max_steps: ReAct 循环最大步数
+            token_budget: 累计 token 预算（按 Agent 实例生命周期累计）。超出后
+                          不再发起新的工具循环步，直接无工具收尾给出答复
             capabilities: 能力标签列表（如 ["search","write"]），供协作策略做能力匹配，
                           替代硬编码的 Agent 名称判断
             tags: 自由标签列表，用于更灵活的分类/筛选
@@ -76,6 +79,7 @@ class Agent(ABC):
         self.llm: LLMClient | None = llm_client
         self.model = model
         self.max_steps = max_steps
+        self.token_budget = token_budget
         # 能力声明：协作系统据此匹配 Agent，而非依赖硬编码 name
         self.capabilities: list[str] = list(capabilities) if capabilities else []
         self.tags: list[str] = list(tags) if tags else []
@@ -305,6 +309,11 @@ class Agent(ABC):
     def get_token_usage(self) -> TokenUsage:
         """获取本 Agent 累计的 token 用量（跨多次 think 调用）"""
         return self._engine.get_token_usage()
+
+    @property
+    def budget_exceeded(self) -> bool:
+        """最近一次 think 是否因 token 预算耗尽而提前收尾"""
+        return self._engine.last_run_budget_exceeded
 
     def reset_token_usage(self) -> None:
         """重置 token 用量统计"""
