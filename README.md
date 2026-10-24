@@ -6,24 +6,27 @@
 [![Tests](https://img.shields.io/badge/tests-426%20passed-brightgreen)](tests/)
 [![Version](https://img.shields.io/badge/version-0.5.0-orange)](CHANGELOG.md)
 
-> 轻量级、可扩展的多智能体框架 —— 基于智谱 GLM，开箱即用的 ReAct Agent、团队协作与异步路由。
+**想读懂 LangGraph / OpenAI Agents SDK 的源码？几十万行，进不去。**
+**想学 Agent 原理？百行 demo 只够做玩具。**
 
-> **定位说明**：这是一个**教学参考实现**（约 7000 行核心代码 + 8 章教程）——为了可通读性而刻意保持小巧，
-> 覆盖现代 Agent 框架的完整概念（ReAct / 工具 / 记忆 / 编排 / MCP / 检查点 / 可观测），
-> 但**不是生产框架**：单机单进程、文件存储、无限流与鉴权。想理解原理、借鉴架构 → 非常合适；
-> 想直接部署业务 → 请用工业级框架。
+PyAgentKit 是中间那条路：一个**完整形态**的 AI Agent 框架——ReAct 推理、多智能体协作、
+MCP 客户端、断点续跑、真流式、426 个测试——但全部核心只有约 7000 行，一个下午能通读。
+配 9 章中文教程逐章讲设计原理；GLM 与 OpenAI 兼容端点（DeepSeek / vLLM / Ollama）即插即用。
 
-PyAgentKit 让你用最少的代码构建能**思考、调用工具、记忆上下文、彼此协作、团队编排**的 AI Agent。支持命令行交互、YAML 声明式编排、流式输出、Token 统计与执行追踪，以及完整的多智能体编程接口。
+*Learn how modern agent frameworks actually work — by reading one you can finish in an afternoon. 9-chapter Chinese tutorial included.*
 
-📚 **[开发教程（8 章 + 实战）](docs/README.md)** — 从 ReAct 原理到团队协作，循序渐进讲透每个模块的设计与实现。新手建议从 [快速开始](docs/01_快速开始.md) 读起。
+## 30 秒跑起来
 
 ```bash
-# 一行命令开始对话（自带网络搜索 + 计算）
-pyagentkit chat --tools web_search calculator
-
-# 声明一个团队，Leader 自动拆任务分配成员
-pyagentkit run configs/team_example.yaml
+pip install -e .                                        # clone 后进入项目目录安装
+pyagentkit chat --tools web_search calculator           # 一行命令开始对话（自带搜索 + 计算）
+pyagentkit run configs/team_example.yaml               # 声明一个团队，Leader 自动拆任务分配成员
 ```
+
+📚 **[开发教程（9 章：原理 8 章 + 实战）](docs/README.md)** — 从 ReAct 原理到团队协作，逐章讲透每个模块的设计与实现。新手从 [快速开始](docs/01_快速开始.md) 读起。
+
+> **定位**：刻意保持小到能通读。想理解框架原理、借鉴架构设计 → 非常合适；
+> 想直接部署生产业务 → 请用工业级框架（单机单进程、文件存储是明确的教学取舍）。
 
 ## 效果预览
 
